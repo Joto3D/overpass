@@ -34,4 +34,61 @@ enum EngineCatalog {
     static var defaultRelease: EngineRelease {
         releases.first { $0.id == "gptk-3.0-3" }!
     }
+
+    // MARK: - Live catalog
+
+    /// The built-in list unioned with `fetched` (typically
+    /// `EngineUpdateChecker.fetchLatest()`'s result, or `latestKnown`'s own
+    /// cache read), deduped by id. The built-in entry wins on a collision —
+    /// its checksum was hand-verified when this catalog shipped, and a
+    /// same-id fetch from GitHub is otherwise identical (same tag, same
+    /// asset) but usually can't be verified the same way, so preferring it
+    /// would silently downgrade an already-trusted release to unverified.
+    static func merged(with fetched: [EngineRelease]) -> [EngineRelease] {
+        var byID: [String: EngineRelease] = [:]
+        for release in fetched { byID[release.id] = release }
+        for release in releases { byID[release.id] = release }
+        return sortedByKindThenVersion(Array(byID.values))
+    }
+
+    /// The merged catalog as of the last `EngineUpdateChecker.fetchLatest()`
+    /// call — this launch or an earlier one, via its on-disk cache under
+    /// `Paths.tools`. Falls back to just the built-in list if nothing has
+    /// ever been fetched.
+    static var latestKnown: [EngineRelease] {
+        guard let cached = EngineUpdateChecker.cachedReleases() else { return releases }
+        return merged(with: cached)
+    }
+
+    /// Sorts by `EngineKind` (declaration order: gptk, then wineStaging),
+    /// then newest version first within each kind.
+    static func sortedByKindThenVersion(_ releases: [EngineRelease]) -> [EngineRelease] {
+        let kindOrder = EngineKind.allCases
+        return releases.sorted { a, b in
+            if a.kind != b.kind {
+                return kindOrder.firstIndex(of: a.kind)! < kindOrder.firstIndex(of: b.kind)!
+            }
+            return compareVersions(a.version, b.version) > 0
+        }
+    }
+
+    /// Splits a version string like `"3.0-3"` or `"11.16"` into components
+    /// on `.`/`-` and compares them numerically where possible, falling
+    /// back to a string compare of any non-numeric component. Returns a
+    /// positive number when `a` is newer than `b`, negative when older,
+    /// zero when equal (as far as this heuristic can tell).
+    private static func compareVersions(_ a: String, _ b: String) -> Int {
+        let partsA = a.split(whereSeparator: { $0 == "." || $0 == "-" }).map(String.init)
+        let partsB = b.split(whereSeparator: { $0 == "." || $0 == "-" }).map(String.init)
+        for i in 0..<max(partsA.count, partsB.count) {
+            let pa = i < partsA.count ? partsA[i] : "0"
+            let pb = i < partsB.count ? partsB[i] : "0"
+            if let na = Int(pa), let nb = Int(pb) {
+                if na != nb { return na - nb }
+            } else if pa != pb {
+                return pa < pb ? -1 : 1
+            }
+        }
+        return 0
+    }
 }

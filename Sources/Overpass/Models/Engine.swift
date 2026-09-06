@@ -28,6 +28,13 @@ struct EngineRelease: Identifiable, Codable, Hashable, Sendable {
     /// Lower-case hex SHA-256 of the tarball. Empty string = unverified.
     let sha256: String
     let notes: String
+    /// False when `sha256` wasn't sourced from a checksum Overpass trusts
+    /// (a hand-verified built-in entry, or a `.sha256` asset/release-body
+    /// hash `EngineUpdateChecker` found alongside the tarball) — an install
+    /// still proceeds, but `EngineManager.install` skips the hash check and
+    /// the UI shows an "unverified checksum" note. Defaults to `true` so
+    /// every existing `EngineCatalog.releases` entry stays as-is.
+    var verified: Bool = true
 
     var displayName: String { "\(kind.displayName) \(version)" }
 }
@@ -47,6 +54,20 @@ struct InstalledEngine: Identifiable, Codable, Hashable, Sendable {
     /// Output of `wine64 --version`, captured at install time.
     let versionString: String
     let installedAt: Date
+    /// SHA-256 actually computed for the downloaded tarball at install
+    /// time, recorded even when `EngineRelease.sha256` was empty (an
+    /// unverified catalog entry). `nil` for engines installed before this
+    /// field existed.
+    var actualSHA256: String? = nil
+    /// Whether `actualSHA256` was checked against a known-good hash before
+    /// installing. `nil` (rather than `false`) for engines installed before
+    /// this field existed — those always went through the old
+    /// always-verify path, so they're treated as verified.
+    var checksumVerified: Bool? = nil
+    /// D3DMetal's version string, set by `D3DMetalImporter` after swapping
+    /// in a build from an Apple GPTK `.dmg`. `nil` until an import has been
+    /// done (i.e. still whatever shipped in the Gcenx tarball).
+    var d3dmetalVersion: String? = nil
 
     var displayName: String { "\(kind.displayName) \(version)" }
 

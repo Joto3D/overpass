@@ -113,8 +113,20 @@ actor EngineManager {
 
             progress(0.8, "Verifying checksum…")
             let actualHash = try Self.sha256Hex(of: tarballURL)
-            guard actualHash.caseInsensitiveCompare(release.sha256) == .orderedSame else {
-                throw EngineManagerError.hashMismatch(expected: release.sha256, actual: actualHash)
+            let checksumVerified: Bool
+            if release.sha256.isEmpty {
+                // No known-good hash for this release (typically one
+                // `EngineUpdateChecker` fetched without finding a `.sha256`
+                // asset or a checksum in the release body) — install
+                // anyway, but record what we actually got rather than
+                // silently trusting it.
+                checksumVerified = false
+                NSLog("[EngineManager] %@ has no catalog checksum; installing unverified. SHA-256: %@", release.id, actualHash)
+            } else {
+                guard actualHash.caseInsensitiveCompare(release.sha256) == .orderedSame else {
+                    throw EngineManagerError.hashMismatch(expected: release.sha256, actual: actualHash)
+                }
+                checksumVerified = true
             }
 
             if FileManager.default.fileExists(atPath: engineDir.path) {
@@ -154,7 +166,9 @@ actor EngineManager {
                 binDir: binDir,
                 libDir: libDir,
                 versionString: versionString,
-                installedAt: Date()
+                installedAt: Date(),
+                actualSHA256: actualHash,
+                checksumVerified: checksumVerified
             )
 
             progress(0.98, "Writing metadata…")
@@ -169,6 +183,16 @@ actor EngineManager {
             try? FileManager.default.removeItem(at: tarballURL)
             throw error
         }
+    }
+
+    // MARK: - Persisting metadata changes
+
+    /// Rewrites `engine`'s `installed.json` in place — used by
+    /// `D3DMetalImporter` to persist a new `d3dmetalVersion` after swapping
+    /// in a build from an Apple GPTK `.dmg`, without going through a full
+    /// (re)install.
+    func persist(_ engine: InstalledEngine) throws {
+        try Self.writeInstalledJSON(engine, to: engine.rootDir)
     }
 
     // MARK: - Remove
