@@ -36,6 +36,25 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
     var performance: PerformanceSettings?
     var createdAt: Date
     var lastUsed: Date?
+    /// `ProgramScanner.schemaVersion` this bottle's `pins` were last
+    /// migrated against. `nil` (any `metadata.json` written before this
+    /// property existed) always mismatches the current
+    /// `ProgramScanner.schemaVersion`, so `ProgramsGridView` runs one
+    /// migration scan the first time the Programs tab is shown for it —
+    /// re-classifying every existing pin's `isSystem`/`isHelper` and
+    /// collapsing any stale case/bitness duplicates a pre-migration
+    /// scanner left behind (see `ProgramScanner.merge`). Optional (rather
+    /// than defaulting to `0`) so it round-trips through Codable's
+    /// synthesized `decodeIfPresent` without a custom decoder.
+    var pinsSchemaVersion: Int?
+    /// Lower-cased `PinnedProgram.exePath` values (see
+    /// `ProgramScanner.dedupeKey`) the user has explicitly removed from
+    /// `pins`. Consulted by every `ProgramScanner.merge(scanned:existing:
+    /// excluding:)` call so a rescan/migration doesn't silently re-add a
+    /// program the user asked to stop seeing; cleared for a given path by
+    /// "Add program…" or by running that exe again. Optional for the same
+    /// backward-compatibility reason as `pinsSchemaVersion`.
+    var removedPinPaths: [String]?
 
     init(id: UUID = UUID(), name: String, engineID: String, windowsVersion: WindowsVersion = .win10) {
         self.id = id

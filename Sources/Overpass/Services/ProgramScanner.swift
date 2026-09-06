@@ -15,6 +15,16 @@ import Foundation
 /// `isSystem` and `isHelper` flags so a view can default to hiding them,
 /// and dedupes exact/near-duplicate binaries down to one entry.
 enum ProgramScanner {
+    /// Bumped whenever `merge`'s classification/dedupe rules change enough
+    /// that pins written by an older version of this scanner are worth
+    /// re-running through `merge` once. `Bottle.pinsSchemaVersion` tracks
+    /// which version a bottle's pins were last migrated against;
+    /// `ProgramsGridView` compares the two and runs a background
+    /// scan+merge on mismatch. Version 2 introduced case-insensitive/
+    /// bitness-folded dedupe (`dedupeKey`) and catalog launch-arg
+    /// defaults (`applyCatalogDefaults`).
+    static let schemaVersion = 2
+
     /// Name fragments (case-insensitive substring match against the
     /// executable's base name) that mark a program as installer/updater/
     /// utility scaffolding rather than something a user would want to
@@ -51,19 +61,50 @@ enum ProgramScanner {
     ///
     /// `excluding` holds paths the user has explicitly removed from their
     /// pins (a view tracks this separately since a removed, non-user pin
-    /// leaves no trace in `existing` to compare against): any freshly
-    /// scanned entry at one of those paths is dropped rather than being
+    /// leaves no trace in `existing` to compare against, see
+    /// `Bottle.removedPinPaths`): any freshly scanned entry matching one of
+    /// those paths (compared via `dedupeKey`) is dropped rather than being
     /// re-added as if it were newly discovered.
+    ///
+    /// Every pin is keyed by `dedupeKey(exePath)` — case-insensitive and
+    /// with a leading "Program Files (x86)" folded onto "Program Files" —
+    /// rather than the raw path, so:
+    /// - two pre-existing pins that only differ by case (`Steam.exe` /
+    ///   `steam.exe`, stored back when the scanner didn't dedupe case)
+    ///   collapse into one before ever being compared against a fresh scan;
+    /// - an existing pin sitting in the "wrong" bitness folder for what a
+    ///   fresh scan found (`Program Files (x86)/iexplore.exe` when the scan
+    ///   collapsed onto the plain `Program Files` copy) still matches that
+    ///   scanned entry instead of surviving forever as an unclassified
+    ///   "still on disk" leftover.
+    /// A matched pin also adopts the fresh scan's `exePath` — the on-disk
+    /// canonical casing (`resolvingSymlinksInPath` resolves through
+    /// realpath, which corrects case on a case-insensitive volume) — so a
+    /// stale wrong-cased path self-heals on every rescan/migration.
     static func merge(scanned rawScanned: [PinnedProgram], existing: [PinnedProgram], excluding: Set<String> = []) -> [PinnedProgram] {
-        let scanned = excluding.isEmpty ? rawScanned : rawScanned.filter { !excluding.contains($0.exePath) }
+        let excludingKeys = Set(excluding.map(dedupeKey))
+        let scanned = excludingKeys.isEmpty ? rawScanned : rawScanned.filter { !excludingKeys.contains(dedupeKey($0.exePath)) }
 
-        var byPath: [String: PinnedProgram] = [:]
+        // Collapse existing non-user pins onto dedupeKey first: a stale
+        // pair stored before this dedupe existed (two pins, same real
+        // program) must become one *before* being matched against the
+        // fresh scan, or only one of the two would ever get a chance to
+        // match and the other would linger as an unclassified duplicate.
+        var byKey: [String: PinnedProgram] = [:]
         for pin in existing where !pin.isUserAdded {
-            byPath[pin.exePath] = pin
+            let key = dedupeKey(pin.exePath)
+            if let current = byKey[key] {
+                byKey[key] = preferredDuplicate(current, pin)
+            } else {
+                byKey[key] = pin
+            }
         }
 
+        var seenKeys = Set<String>()
         var merged: [PinnedProgram] = scanned.map { fresh in
-            if let previous = byPath[fresh.exePath] {
+            let key = dedupeKey(fresh.exePath)
+            seenKeys.insert(key)
+            if let previous = byKey[key] {
                 // Keep the existing name: it may have been set by the app
                 // catalog (e.g. "Steam" with launch args) or edited by the
                 // user, and the scanner's filename-derived name is only a
@@ -72,25 +113,114 @@ enum ProgramScanner {
                 // older pin predating those flags always decoded to
                 // `false`/`false`, which would otherwise stick forever.
                 var kept = previous
+                kept.exePath = fresh.exePath
                 kept.isSystem = fresh.isSystem
                 kept.isHelper = fresh.isHelper
                 kept.launchURL = fresh.launchURL
-                return kept
+                return applyCatalogDefaults(to: kept)
             }
-            return fresh
+            return applyCatalogDefaults(to: fresh)
         }
 
-        let scannedPaths = Set(scanned.map(\.exePath))
         let userAdded = existing.filter { $0.isUserAdded }
         // Also keep any existing non-user pin whose exe vanished from this
         // scan (e.g. it's on a network share, or the scan roots changed) —
-        // don't silently drop a pin just because one rescan missed it,
-        // as long as the file still exists on disk.
-        let stillOnDisk = existing.filter { !$0.isUserAdded && !scannedPaths.contains($0.exePath) && FileManager.default.fileExists(atPath: $0.exePath) }
+        // don't silently drop a pin just because one rescan missed it, as
+        // long as the file still exists on disk. `seenKeys` (and the local
+        // `keptKeys` accumulator) keep this from re-adding a duplicate of
+        // something already merged above via `byKey`'s own collapsing.
+        var keptKeys = Set<String>()
+        let stillOnDisk = existing.filter { pin -> Bool in
+            guard !pin.isUserAdded else { return false }
+            let key = dedupeKey(pin.exePath)
+            guard !seenKeys.contains(key), !keptKeys.contains(key) else { return false }
+            guard FileManager.default.fileExists(atPath: pin.exePath) else { return false }
+            keptKeys.insert(key)
+            return true
+        }
 
-        merged.append(contentsOf: stillOnDisk)
+        merged.append(contentsOf: stillOnDisk.map(applyCatalogDefaults))
         merged.append(contentsOf: userAdded)
         return merged.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Tie-break when two pre-migration pins collapse onto the same
+    /// `dedupeKey`: prefer whichever has user-edited launch arguments
+    /// (don't silently drop a customization), then whichever name looks
+    /// "polished" (mixed case, e.g. a `.lnk`-derived or catalog name like
+    /// "Steam") over a raw all-one-case filename (`steam`/`STEAM`).
+    private static func preferredDuplicate(_ a: PinnedProgram, _ b: PinnedProgram) -> PinnedProgram {
+        if !a.args.isEmpty, b.args.isEmpty { return a }
+        if !b.args.isEmpty, a.args.isEmpty { return b }
+        let aPolished = a.name != a.name.lowercased()
+        let bPolished = b.name != b.name.lowercased()
+        if aPolished != bPolished { return aPolished ? a : b }
+        return a
+    }
+
+    /// Normalizes a `PinnedProgram.exePath` for duplicate comparison:
+    /// resolves symlinks (which, via `realpath`, also corrects case on a
+    /// case-insensitive volume when the path exists) and lower-cases the
+    /// result, so `Steam.exe` and `steam.exe` in the same folder — the
+    /// same file on a case-insensitive volume, just recorded under two
+    /// different casings by a pre-migration scan — compare equal. Used by
+    /// `merge` and by pin-on-run duplicate checks
+    /// (`AppState.run(exe:args:in:)`).
+    ///
+    /// Deliberately does *not* fold "Program Files (x86)" onto "Program
+    /// Files": those two trees often hold genuinely different binaries at
+    /// the same relative path (a 32-bit and a 64-bit build of the same
+    /// stub — Wine's own bundled `iexplore.exe`/`wmplayer.exe` are a
+    /// different size in each tree), so treating them as duplicates would
+    /// silently discard one of two distinct, both-real pins.
+    /// `ProgramScanner.scan` already collapses the case where they
+    /// genuinely are the same file (`scanSync`'s own `byNormalizedPath`
+    /// pass, which additionally requires a matching file size) before
+    /// `dedupeKey` ever sees the result.
+    static func dedupeKey(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path.lowercased()
+    }
+
+    /// When `pin`'s exe path ends with one of `AppCatalog.apps[*]`'s
+    /// `launchExeHints` (case-insensitive suffix match) and the pin has no
+    /// launch arguments yet, adopts that catalog entry's name and
+    /// `launchArgs` — e.g. any Steam pin (freshly scanned, migrated from
+    /// an older schema, or pinned by running `steam.exe` directly) always
+    /// ends up named "Steam" with "-allosarches -cef-force-32bit" instead
+    /// of silently launching without the flags Steam needs to not crash on
+    /// Apple Silicon. A no-op for a pin with existing (possibly
+    /// user-edited) args, or a URL-target pin (`launchURL != nil`).
+    static func applyCatalogDefaults(to pin: PinnedProgram) -> PinnedProgram {
+        guard pin.args.isEmpty, pin.launchURL == nil else { return pin }
+        let lowerPath = pin.exePath.lowercased()
+        guard let app = AppCatalog.apps.first(where: { app in
+            app.launchExeHints.contains { lowerPath.hasSuffix($0.lowercased()) }
+        }) else { return pin }
+        var updated = pin
+        updated.name = app.name
+        updated.args = app.launchArgs
+        return updated
+    }
+
+    /// Derives a display name from an exe's base filename (no extension):
+    /// `_`/`-` become spaces, and — unless the name already mixes upper
+    /// and lower case (e.g. "SteamService", left alone so it isn't mangled
+    /// into "Steam Service") — each word's first letter is capitalized, so
+    /// `geeky` -> "Geeky" and `my_tool` -> "My Tool". Used to name a pin
+    /// created on the fly by running an exe that isn't pinned yet (see
+    /// `AppState.run(exe:args:in:)`) and by "Add program…".
+    static func derivedPinName(fromBaseName base: String) -> String {
+        let spaced = base.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: "-", with: " ")
+        let hasMixedCase = base.contains { $0.isUppercase } && base.contains { $0.isLowercase }
+        guard !hasMixedCase else {
+            return spaced.trimmingCharacters(in: .whitespaces)
+        }
+        let words = spaced.split(separator: " ").map { word -> String in
+            guard let first = word.first else { return String(word) }
+            return first.uppercased() + word.dropFirst()
+        }
+        let joined = words.joined(separator: " ")
+        return joined.isEmpty ? base : joined
     }
 
     // MARK: - Synchronous scan (runs off the main actor via Task.detached)

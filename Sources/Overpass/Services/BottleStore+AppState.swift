@@ -107,7 +107,7 @@ extension AppState {
             let record = RunRecord(bottleID: bottle.id, exePath: exe.path, logURL: logURL, pid: process.processIdentifier)
             runs.append(record)
 
-            var updated = bottle
+            var updated = ensuringPin(for: exe, in: bottle)
             updated.lastUsed = Date()
             updateBottle(updated)
 
@@ -179,5 +179,54 @@ extension AppState {
     /// Reveals the bottle's `drive_c` in Finder.
     func openDriveC(_ bottle: Bottle) {
         NSWorkspace.shared.open(bottle.driveC)
+    }
+
+    // MARK: - Pin on run
+
+    /// Ensures `exe` has a pin in `bottle.pins`, so anything ever launched
+    /// through Overpass — Run .exe…, a drag-and-drop, Finder "Open With",
+    /// or the bottle picker — can always be re-launched from the Programs
+    /// list afterward without browsing to it again. Also un-removes it
+    /// from `Bottle.removedPinPaths` if the user had previously removed
+    /// that pin (running it again is treated as "I do want this back").
+    ///
+    /// Matching against an existing pin (and against `removedPinPaths`) is
+    /// done via `ProgramScanner.dedupeKey` rather than a raw string
+    /// compare, so running a program a second time — even by a
+    /// differently-cased path, or via its Program Files (x86) copy — never
+    /// creates a duplicate pin. A brand-new pin's `isUserAdded` is false
+    /// when `exe` lives inside the bottle's own `drive_c` (it behaves like
+    /// anything `ProgramScanner.scan` would have found, so a later rescan
+    /// can freely reclassify it) and true otherwise (an external file the
+    /// scanner would never discover on its own).
+    ///
+    /// Pure — returns the updated `Bottle` rather than persisting it, so
+    /// callers can fold this into a single `updateBottle` alongside their
+    /// own changes (e.g. bumping `lastUsed`).
+    func ensuringPin(for exe: URL, in bottle: Bottle) -> Bottle {
+        var updated = bottle
+        let key = ProgramScanner.dedupeKey(exe.path)
+
+        if let removed = updated.removedPinPaths, !removed.isEmpty {
+            let filtered = removed.filter { ProgramScanner.dedupeKey($0) != key }
+            if filtered.count != removed.count {
+                updated.removedPinPaths = filtered
+            }
+        }
+
+        guard !updated.pins.contains(where: { ProgramScanner.dedupeKey($0.exePath) == key }) else {
+            return updated
+        }
+
+        let insideDriveC = exe.path.lowercased().hasPrefix(bottle.driveC.path.lowercased())
+        let baseName = exe.deletingPathExtension().lastPathComponent
+        var pin = PinnedProgram(
+            name: ProgramScanner.derivedPinName(fromBaseName: baseName),
+            exePath: exe.path,
+            isUserAdded: !insideDriveC
+        )
+        pin = ProgramScanner.applyCatalogDefaults(to: pin)
+        updated.pins.append(pin)
+        return updated
     }
 }

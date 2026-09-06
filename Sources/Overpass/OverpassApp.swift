@@ -24,7 +24,7 @@ struct OverpassApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Overpass", id: "main") {
+        Window("Overpass", id: "main") {
             MainWindow()
                 .environment(appState)
                 .environment(themeStore)

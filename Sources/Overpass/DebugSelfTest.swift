@@ -32,6 +32,8 @@ enum DebugSelfTest {
         testShellLink(root: root)
         testProgramScannerScan()
         testProgramScannerMerge(root: root)
+        testProgramScannerMigrationDedupe(root: root)
+        testProgramScannerCatalogDefaultsAndNaming()
         testWineRunnerEnvironment(root: root)
         testWineRunnerSplitArguments()
         testPerformanceSettings(root: root)
@@ -276,6 +278,133 @@ enum DebugSelfTest {
         check(
             "merge keeps an existing pin missed by the scan as long as its exe still exists on disk",
             mergedEmpty.contains { $0.exePath == stillOnDiskPin.exePath }
+        )
+    }
+
+    // MARK: - ProgramScanner.merge: schema-migration dedupe + catalog defaults
+
+    /// Reproduces the real-world bug this migration (`ProgramScanner.
+    /// schemaVersion` 2) exists to fix, against an actual bottle's `Steam`
+    /// pins captured before this fix: `Steam.exe`/`steam.exe` — the exact
+    /// same file on disk (verified by inode), only reachable under two
+    /// different stored casings because a pre-migration scanner had no
+    /// case-insensitive dedupe — must collapse to one pin, get reclassified
+    /// (isSystem/isHelper refreshed), and pick up the catalog's Steam
+    /// launch args. `iexplore.exe` under `Program Files` and `Program
+    /// Files (x86)` looks like the same shape of duplicate but is *not* —
+    /// real measurement showed the two are genuinely different sizes (a
+    /// 32-bit and a 64-bit build of Wine's IE stub) — so both must survive
+    /// as distinct, individually-reclassified pins with distinct ids,
+    /// never collapsed and never sharing an id.
+    private static func testProgramScannerMigrationDedupe(root: URL) {
+        let fm = FileManager.default
+        let driveC = root.appendingPathComponent("MigrateDedupe/drive_c", isDirectory: true)
+        let steamDir = driveC.appendingPathComponent("Program Files (x86)/Steam", isDirectory: true)
+        try? fm.createDirectory(at: steamDir, withIntermediateDirectories: true)
+        let steamExeCanonical = steamDir.appendingPathComponent("Steam.exe")
+        try? Data([0x01]).write(to: steamExeCanonical)
+        // Same file, reached through a differently-cased path — valid on
+        // macOS's default case-insensitive volume, exactly how two stale
+        // pins from an older scanner ended up pointing at "the same" exe
+        // (confirmed against a real bottle: both paths share one inode).
+        let steamExeLower = steamDir.appendingPathComponent("steam.exe")
+
+        // Genuinely different files (different sizes), same relative path
+        // under each bitness tree — must NOT be folded together.
+        let ieDirPlain = driveC.appendingPathComponent("Program Files/Internet Explorer", isDirectory: true)
+        let ieDirX86 = driveC.appendingPathComponent("Program Files (x86)/Internet Explorer", isDirectory: true)
+        try? fm.createDirectory(at: ieDirPlain, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: ieDirX86, withIntermediateDirectories: true)
+        let ieExePlain = ieDirPlain.appendingPathComponent("iexplore.exe")
+        let ieExeX86 = ieDirX86.appendingPathComponent("iexplore.exe")
+        try? Data(repeating: 0x02, count: 128).write(to: ieExePlain)
+        try? Data(repeating: 0x02, count: 96).write(to: ieExeX86)
+        defer { try? fm.removeItem(at: root.appendingPathComponent("MigrateDedupe")) }
+
+        // Stale pins as an old scanner (no case-insensitive dedupe, no
+        // isSystem/isHelper classification ever run against these paths)
+        // would have stored them.
+        let stalePins = [
+            PinnedProgram(name: "Steam", exePath: steamExeCanonical.path, args: "", isUserAdded: false),
+            PinnedProgram(name: "Steam", exePath: steamExeLower.path, args: "", isUserAdded: false),
+            PinnedProgram(name: "iexplore", exePath: ieExePlain.path, args: "", isUserAdded: false),
+            PinnedProgram(name: "iexplore", exePath: ieExeX86.path, args: "", isUserAdded: false),
+        ]
+
+        // What a fresh scan produces once collapsed/classified: scanSync's
+        // own case-insensitive keying (exercised directly against a real
+        // drive_c by `testProgramScannerScan`/`testProgramScannerScan`'s
+        // iexplore case in the class-level `_selfTest`) already collapses
+        // the Steam.exe/steam.exe pair to one candidate, and correctly
+        // keeps both iexplore builds classified isSystem since their sizes
+        // differ. Built by hand here (rather than by pointing
+        // ProgramScanner.scan(bottle:) at this fixture, which would need a
+        // real `Bottle.driveC` — hard-coded under `Paths.bottleDir(id)` —
+        // rather than this scratch tree) so this test stays focused on
+        // `merge`'s own dedupe/reclassification logic.
+        let freshScan = [
+            PinnedProgram(name: "Steam", exePath: steamExeCanonical.path, args: "", isUserAdded: false, isSystem: false, isHelper: false),
+            PinnedProgram(name: "iexplore", exePath: ieExePlain.path, args: "", isUserAdded: false, isSystem: true, isHelper: false),
+            PinnedProgram(name: "iexplore", exePath: ieExeX86.path, args: "", isUserAdded: false, isSystem: true, isHelper: false),
+        ]
+
+        let merged = ProgramScanner.merge(scanned: freshScan, existing: stalePins)
+
+        let steamPins = merged.filter { $0.name.localizedCaseInsensitiveContains("steam") }
+        check("migration collapses duplicate-case Steam pins to exactly one", steamPins.count == 1, "got \(steamPins.count): \(steamPins.map(\.exePath))")
+        check(
+            "migration applies the Steam catalog launch args to the survivor",
+            steamPins.first?.args == "-allosarches -cef-force-32bit",
+            "got \(steamPins.first?.args ?? "nil")"
+        )
+        check("migration keeps the Steam name as \"Steam\"", steamPins.first?.name == "Steam")
+
+        let iexplorePins = merged.filter { $0.name.localizedCaseInsensitiveContains("iexplore") }
+        check(
+            "migration keeps both genuinely-different iexplore builds as distinct pins",
+            iexplorePins.count == 2,
+            "got \(iexplorePins.count): \(iexplorePins.map(\.exePath))"
+        )
+        check(
+            "migration gives the two distinct iexplore pins distinct ids",
+            Set(iexplorePins.map(\.id)).count == 2
+        )
+        check(
+            "migration re-classifies both surviving iexplore pins as isSystem",
+            iexplorePins.allSatisfy { $0.isSystem == true }
+        )
+
+        check(
+            "ProgramScanner.dedupeKey does NOT fold Program Files (x86) onto Program Files (they can be genuinely different binaries)",
+            ProgramScanner.dedupeKey(ieExeX86.path) != ProgramScanner.dedupeKey(ieExePlain.path)
+        )
+        check(
+            "ProgramScanner.dedupeKey collapses a same-file case difference",
+            ProgramScanner.dedupeKey(steamExeCanonical.path) == ProgramScanner.dedupeKey(steamExeLower.path)
+        )
+    }
+
+    // MARK: - ProgramScanner.applyCatalogDefaults / derivedPinName
+
+    private static func testProgramScannerCatalogDefaultsAndNaming() {
+        let steamPin = PinnedProgram(name: "steam", exePath: "/drive_c/Program Files (x86)/Steam/steam.exe", args: "")
+        let withDefaults = ProgramScanner.applyCatalogDefaults(to: steamPin)
+        check("applyCatalogDefaults renames a matching, argless pin to the catalog name", withDefaults.name == "Steam")
+        check("applyCatalogDefaults applies the catalog's launch args", withDefaults.args == "-allosarches -cef-force-32bit")
+
+        let customArgsPin = PinnedProgram(name: "steam", exePath: "/drive_c/Program Files (x86)/Steam/steam.exe", args: "-custom")
+        let untouched = ProgramScanner.applyCatalogDefaults(to: customArgsPin)
+        check("applyCatalogDefaults leaves a pin with existing args alone", untouched.args == "-custom" && untouched.name == "steam")
+
+        let unrelatedPin = PinnedProgram(name: "MyGame", exePath: "/drive_c/Program Files/MyGame/game.exe", args: "")
+        let unrelatedResult = ProgramScanner.applyCatalogDefaults(to: unrelatedPin)
+        check("applyCatalogDefaults is a no-op for a non-catalog exe", unrelatedResult == unrelatedPin)
+
+        check("derivedPinName capitalizes an all-lowercase name", ProgramScanner.derivedPinName(fromBaseName: "geeky") == "Geeky")
+        check("derivedPinName turns separators into spaces and capitalizes", ProgramScanner.derivedPinName(fromBaseName: "my_tool-name") == "My Tool Name")
+        check(
+            "derivedPinName leaves an already mixed-case name's casing alone",
+            ProgramScanner.derivedPinName(fromBaseName: "SteamService") == "SteamService"
         )
     }
 

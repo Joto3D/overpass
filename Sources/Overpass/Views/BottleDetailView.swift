@@ -153,9 +153,11 @@ struct BottleDetailView: View {
 
     private func rescanPrograms(_ bottle: Bottle) async {
         let scanned = await ProgramScanner.scan(bottle: bottle)
-        let merged = ProgramScanner.merge(scanned: scanned, existing: bottle.pins)
+        let excluding = Set(bottle.removedPinPaths ?? [])
+        let merged = ProgramScanner.merge(scanned: scanned, existing: bottle.pins, excluding: excluding)
         var updated = bottle
         updated.pins = merged
+        updated.pinsSchemaVersion = ProgramScanner.schemaVersion
         appState.updateBottle(updated)
     }
 
