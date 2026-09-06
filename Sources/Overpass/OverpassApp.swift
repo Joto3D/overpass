@@ -10,6 +10,8 @@ struct OverpassApp: App {
     init() {
         // Headless smoke test: `Overpass --check` (see DebugCheck.swift).
         DebugCheck.runIfRequested()
+        DebugInstallCheck.runIfRequested()
+        DebugPerfCheck.runIfRequested()
 
         // SPM executables have no app bundle at dev time, so AppKit doesn't
         // automatically switch us into a regular foreground app with a menu
