@@ -23,7 +23,7 @@ enum ProgramScanner {
     /// scan+merge on mismatch. Version 2 introduced case-insensitive/
     /// bitness-folded dedupe (`dedupeKey`) and catalog launch-arg
     /// defaults (`applyCatalogDefaults`).
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     /// Name fragments (case-insensitive substring match against the
     /// executable's base name) that mark a program as installer/updater/
@@ -191,7 +191,11 @@ enum ProgramScanner {
     /// Apple Silicon. A no-op for a pin with existing (possibly
     /// user-edited) args, or a URL-target pin (`launchURL != nil`).
     static func applyCatalogDefaults(to pin: PinnedProgram) -> PinnedProgram {
-        guard pin.args.isEmpty, pin.launchURL == nil else { return pin }
+        // Empty args, or args equal to an older catalog default, get the
+        // current catalog default (e.g. Steam's flags gained GPU-disable
+        // switches after steamwebhelper hung with the original set).
+        let legacyDefaults: Set<String> = ["-allosarches -cef-force-32bit"]
+        guard pin.args.isEmpty || legacyDefaults.contains(pin.args), pin.launchURL == nil else { return pin }
         let lowerPath = pin.exePath.lowercased()
         guard let app = AppCatalog.apps.first(where: { app in
             app.launchExeHints.contains { lowerPath.hasSuffix($0.lowercased()) }

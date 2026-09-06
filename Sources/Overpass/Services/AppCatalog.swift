@@ -127,9 +127,9 @@ enum AppCatalog {
             silentArgs: ["/S"],
             recommendedWindows: .win10,
             preferredEngine: .gptk,
-            postInstallNotes: "Launch flags \"-allosarches -cef-force-32bit\" are applied automatically — they work around steamwebhelper (Steam's embedded Chromium browser) crashing on launch under Apple Silicon GPTK/Wine, a fix documented by CrossOver support and mirrored on mybyways.com's \"Running Steam in Game Porting Toolkit\" (Sept 2026). If the login screen itself renders blank, add \"-noreactlogin\" (Valve's older non-React login UI) as a fallback — note that Valve has periodically threatened to remove that flag from Steam, so it may stop working in a future Steam update.",
+            postInstallNotes: "Launch flags \"-allosarches -cef-force-32bit -cef-disable-gpu -cef-disable-gpu-compositing\" are applied automatically (the GPU flags stop steamwebhelper hanging with \"not responding\") — they work around steamwebhelper (Steam's embedded Chromium browser) crashing on launch under Apple Silicon GPTK/Wine, a fix documented by CrossOver support and mirrored on mybyways.com's \"Running Steam in Game Porting Toolkit\" (Sept 2026). If the login screen itself renders blank, add \"-noreactlogin\" (Valve's older non-React login UI) as a fallback — note that Valve has periodically threatened to remove that flag from Steam, so it may stop working in a future Steam update.",
             launchExeHints: ["Program Files (x86)/Steam/steam.exe"],
-            launchArgs: "-allosarches -cef-force-32bit",
+            launchArgs: "-allosarches -cef-force-32bit -cef-disable-gpu -cef-disable-gpu-compositing",
             keywords: ["valve", "games", "store"],
             iconSymbol: "gamecontroller.fill"
         ),
