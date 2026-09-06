@@ -27,6 +27,7 @@ final class AppState {
     // MARK: Navigation
     enum SidebarItem: Hashable {
         case bottle(UUID)
+        case installApps
         case engines
         case settings
     }

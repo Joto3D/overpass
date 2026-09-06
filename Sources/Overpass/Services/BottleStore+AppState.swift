@@ -1,0 +1,160 @@
+import Foundation
+import AppKit
+
+/// Bottle lifecycle and run/stop/tool actions on `AppState`. Mirrors the
+/// shape of `EngineManager+AppState.swift`: `AppState` itself only holds
+/// state (`bottles`, `runs`, `bottleCreationStatus`, ...); the actual
+/// filesystem/process work lives in `BottleStore`/`WineRunner` and is
+/// wired up here. Every failure is routed through `report(_:context:)` —
+/// nothing fails silently.
+extension AppState {
+    // MARK: - Loading
+
+    func loadBottles() {
+        bottles = BottleStore.loadAll()
+    }
+
+    // MARK: - Create
+
+    /// Creates a new bottle: makes its prefix folder, runs `wineboot -i`
+    /// then `winecfg -v <version>` (progress surfaced via
+    /// `bottleCreationStatus`), writes `metadata.json`, and selects it. On
+    /// any failure the partial folder is removed and the error reported.
+    func createBottle(name: String, engineID: String, windowsVersion: WindowsVersion) async {
+        guard let engine = installedEngines.first(where: { $0.id == engineID }) else {
+            report("No installed engine to create the bottle with.")
+            return
+        }
+
+        let bottle = Bottle(name: name, engineID: engineID, windowsVersion: windowsVersion)
+        bottleCreationStatus[bottle.id] = "Creating bottle…"
+
+        do {
+            try FileManager.default.createDirectory(at: bottle.prefixDir, withIntermediateDirectories: true)
+
+            try await WineRunner.createPrefix(bottle: bottle, engine: engine) { [weak self] message in
+                Task { @MainActor in
+                    self?.bottleCreationStatus[bottle.id] = message
+                }
+            }
+
+            try BottleStore.save(bottle)
+            bottles.append(bottle)
+            bottles.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            bottleCreationStatus[bottle.id] = nil
+            selection = .bottle(bottle.id)
+        } catch {
+            bottleCreationStatus[bottle.id] = nil
+            try? FileManager.default.removeItem(at: bottle.prefixDir)
+            report(error, context: "Creating bottle \"\(name)\"")
+        }
+    }
+
+    // MARK: - Delete
+
+    /// Stops everything running in the bottle, then moves its prefix to
+    /// the Trash and deselects it.
+    func deleteBottle(_ bottle: Bottle) async {
+        if let engine = engine(for: bottle) {
+            await WineRunner.stop(bottle: bottle, engine: engine)
+        }
+        for index in runs.indices where runs[index].bottleID == bottle.id {
+            runs[index].isRunning = false
+        }
+
+        do {
+            try BottleStore.delete(bottle)
+            bottles.removeAll { $0.id == bottle.id }
+            bottleCreationStatus[bottle.id] = nil
+            if selection == .bottle(bottle.id) {
+                selection = nil
+            }
+        } catch {
+            report(error, context: "Deleting bottle \"\(bottle.name)\"")
+        }
+    }
+
+    // MARK: - Update
+
+    /// Persists `bottle` and replaces it in `bottles`.
+    func updateBottle(_ bottle: Bottle) {
+        do {
+            try BottleStore.save(bottle)
+            if let index = bottles.firstIndex(where: { $0.id == bottle.id }) {
+                bottles[index] = bottle
+            }
+        } catch {
+            report(error, context: "Saving bottle \"\(bottle.name)\"")
+        }
+    }
+
+    // MARK: - Run
+
+    /// Launches `exe` (or `.msi`) inside `bottle`: allocates a fresh log
+    /// file, starts the Wine process, records a `RunRecord`, bumps
+    /// `lastUsed`, and watches for termination on a detached task so
+    /// `RunRecord.isRunning` flips without blocking the main actor.
+    func run(exe: URL, args: String = "", in bottle: Bottle) async {
+        guard let engine = engine(for: bottle) else {
+            report("No engine installed for bottle \"\(bottle.name)\".")
+            return
+        }
+
+        let logURL = LogStore.newLogURL(bottleID: bottle.id, exeName: exe.lastPathComponent)
+        do {
+            let process = try WineRunner.launch(exe: exe, args: args, bottle: bottle, engine: engine, logURL: logURL)
+
+            let record = RunRecord(bottleID: bottle.id, exePath: exe.path, logURL: logURL, pid: process.processIdentifier)
+            runs.append(record)
+
+            var updated = bottle
+            updated.lastUsed = Date()
+            updateBottle(updated)
+
+            let recordID = record.id
+            Task.detached { [weak self] in
+                process.waitUntilExit()
+                await MainActor.run {
+                    guard let self else { return }
+                    if let index = self.runs.firstIndex(where: { $0.id == recordID }) {
+                        self.runs[index].isRunning = false
+                    }
+                }
+            }
+        } catch {
+            report(error, context: "Running \(exe.lastPathComponent)")
+        }
+    }
+
+    /// Stops every process in `bottle` and marks its runs no longer
+    /// running.
+    func stopAll(in bottle: Bottle) async {
+        guard let engine = engine(for: bottle) else { return }
+        await WineRunner.stop(bottle: bottle, engine: engine)
+        for index in runs.indices where runs[index].bottleID == bottle.id {
+            runs[index].isRunning = false
+        }
+    }
+
+    // MARK: - Built-in tools
+
+    /// Launches a bundled Wine tool by name (`winecfg`, `regedit`,
+    /// `explorer`, `taskmgr`) detached, logging to its own file.
+    func runTool(name: String, in bottle: Bottle) {
+        guard let engine = engine(for: bottle) else {
+            report("No engine installed for bottle \"\(bottle.name)\".")
+            return
+        }
+        let logURL = LogStore.newLogURL(bottleID: bottle.id, exeName: name)
+        do {
+            _ = try WineRunner.launchTool(name: name, bottle: bottle, engine: engine, logURL: logURL)
+        } catch {
+            report(error, context: "Launching \(name)")
+        }
+    }
+
+    /// Reveals the bottle's `drive_c` in Finder.
+    func openDriveC(_ bottle: Bottle) {
+        NSWorkspace.shared.open(bottle.driveC)
+    }
+}

@@ -31,6 +31,9 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
     /// Extra environment variables appended at launch.
     var env: [String: String]
     var pins: [PinnedProgram]
+    /// Performance/graphics tuning (Performance tab). Optional so older
+    /// metadata.json files decode; nil means "defaults".
+    var performance: PerformanceSettings?
     var createdAt: Date
     var lastUsed: Date?
 

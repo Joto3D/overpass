@@ -8,6 +8,9 @@ struct OverpassApp: App {
     @State private var themeStore = ThemeStore()
 
     init() {
+        // Headless smoke test: `Overpass --check` (see DebugCheck.swift).
+        DebugCheck.runIfRequested()
+
         // SPM executables have no app bundle at dev time, so AppKit doesn't
         // automatically switch us into a regular foreground app with a menu
         // bar and a real window. Do that manually so `swift run` behaves
