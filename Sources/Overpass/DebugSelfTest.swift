@@ -354,7 +354,7 @@ enum DebugSelfTest {
         check("migration collapses duplicate-case Steam pins to exactly one", steamPins.count == 1, "got \(steamPins.count): \(steamPins.map(\.exePath))")
         check(
             "migration applies the Steam catalog launch args to the survivor",
-            steamPins.first?.args == "-allosarches -cef-force-32bit -cef-disable-gpu -cef-disable-gpu-compositing",
+            steamPins.first?.args == "-allosarches -cef-disable-gpu -cef-disable-gpu-compositing",
             "got \(steamPins.first?.args ?? "nil")"
         )
         check("migration keeps the Steam name as \"Steam\"", steamPins.first?.name == "Steam")
@@ -390,7 +390,7 @@ enum DebugSelfTest {
         let steamPin = PinnedProgram(name: "steam", exePath: "/drive_c/Program Files (x86)/Steam/steam.exe", args: "")
         let withDefaults = ProgramScanner.applyCatalogDefaults(to: steamPin)
         check("applyCatalogDefaults renames a matching, argless pin to the catalog name", withDefaults.name == "Steam")
-        check("applyCatalogDefaults applies the catalog's launch args", withDefaults.args == "-allosarches -cef-force-32bit -cef-disable-gpu -cef-disable-gpu-compositing")
+        check("applyCatalogDefaults applies the catalog's launch args", withDefaults.args == "-allosarches -cef-disable-gpu -cef-disable-gpu-compositing")
 
         let customArgsPin = PinnedProgram(name: "steam", exePath: "/drive_c/Program Files (x86)/Steam/steam.exe", args: "-custom")
         let untouched = ProgramScanner.applyCatalogDefaults(to: customArgsPin)

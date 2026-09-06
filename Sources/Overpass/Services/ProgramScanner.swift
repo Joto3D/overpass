@@ -23,7 +23,7 @@ enum ProgramScanner {
     /// scan+merge on mismatch. Version 2 introduced case-insensitive/
     /// bitness-folded dedupe (`dedupeKey`) and catalog launch-arg
     /// defaults (`applyCatalogDefaults`).
-    static let schemaVersion = 3
+    static let schemaVersion = 4
 
     /// Name fragments (case-insensitive substring match against the
     /// executable's base name) that mark a program as installer/updater/
@@ -194,7 +194,7 @@ enum ProgramScanner {
         // Empty args, or args equal to an older catalog default, get the
         // current catalog default (e.g. Steam's flags gained GPU-disable
         // switches after steamwebhelper hung with the original set).
-        let legacyDefaults: Set<String> = ["-allosarches -cef-force-32bit"]
+        let legacyDefaults: Set<String> = ["-allosarches -cef-force-32bit", "-allosarches -cef-force-32bit -cef-disable-gpu -cef-disable-gpu-compositing"]
         guard pin.args.isEmpty || legacyDefaults.contains(pin.args), pin.launchURL == nil else { return pin }
         let lowerPath = pin.exePath.lowercased()
         guard let app = AppCatalog.apps.first(where: { app in
