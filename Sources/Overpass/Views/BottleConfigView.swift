@@ -27,11 +27,9 @@ struct BottleConfigView: View {
             if let local {
                 Form {
                     identitySection(local)
-                    engineSection(local)
-                    togglesSection(local)
+                    wineSection(local)
                     environmentSection(local)
-                    toolsSection(local)
-                    dangerSection(local)
+                    advancedSection(local)
                 }
                 .formStyle(.grouped)
             } else {
@@ -49,37 +47,13 @@ struct BottleConfigView: View {
             TextField("Name", text: binding(\.name))
                 .onSubmit { save() }
 
-            LabeledContent("Prefix path") {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text(bottle.prefixDir.path)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button {
-                        copyToClipboard(bottle.prefixDir.path)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Copy prefix path")
-                }
-            }
-        }
-    }
-
-    private func engineSection(_ bottle: Bottle) -> some View {
-        Section("Engine") {
             Picker("Engine", selection: binding(\.engineID)) {
                 ForEach(appState.installedEngines) { engine in
                     Text(engine.displayName).tag(engine.id)
                 }
             }
             .onChange(of: bottle.engineID) { _, _ in save() }
-
-            Text("Changing engine keeps the prefix; some programs may need reinstalling.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .help("Changing engine keeps the prefix; some programs may need reinstalling.")
 
             Picker("Windows Version", selection: binding(\.windowsVersion)) {
                 ForEach(WindowsVersion.allCases) { version in
@@ -102,27 +76,14 @@ struct BottleConfigView: View {
         }
     }
 
-    private func togglesSection(_ bottle: Bottle) -> some View {
-        Section("Runtime") {
+    private func wineSection(_ bottle: Bottle) -> some View {
+        Section("Wine") {
             Toggle("ESync", isOn: binding(\.esync))
                 .onChange(of: bottle.esync) { _, _ in save() }
+                .help("Fast userspace event-synchronization primitives.")
             Toggle("MSync", isOn: binding(\.msync))
                 .onChange(of: bottle.msync) { _, _ in save() }
-            Toggle("Metal HUD", isOn: binding(\.metalHUD))
-                .onChange(of: bottle.metalHUD) { _, _ in save() }
-            Toggle("Verbose logging", isOn: binding(\.verboseLog))
-                .onChange(of: bottle.verboseLog) { _, _ in save() }
-
-            let dxvkSupported = engine?.kind.supportsDXVK ?? false
-            Toggle("DXVK", isOn: binding(\.dxvk))
-                .disabled(!dxvkSupported)
-                .onChange(of: bottle.dxvk) { _, _ in save() }
-                .help(dxvkSupported
-                      ? "DXVK files are managed on the Extras tab."
-                      : "DXVK is only available on Wine Staging engines.")
-            Text("DXVK files are managed on the Extras tab.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .help("Kernel-assisted sync, newer than ESync and often faster.")
         }
     }
 
@@ -159,22 +120,30 @@ struct BottleConfigView: View {
         }
     }
 
-    private func toolsSection(_ bottle: Bottle) -> some View {
-        Section("Tools") {
-            HStack(spacing: Theme.Spacing.s) {
-                Button("winecfg") { appState.runTool(name: "winecfg", in: bottle) }
-                Button("regedit") { appState.runTool(name: "regedit", in: bottle) }
-                Button("explorer") { appState.runTool(name: "explorer", in: bottle) }
-                Button("taskmgr") { appState.runTool(name: "taskmgr", in: bottle) }
-                Button("Open C: drive") { appState.openDriveC(bottle) }
-            }
-            .buttonStyle(.bordered)
-        }
-    }
+    private func advancedSection(_ bottle: Bottle) -> some View {
+        Section("Advanced") {
+            Toggle("Verbose logging", isOn: binding(\.verboseLog))
+                .onChange(of: bottle.verboseLog) { _, _ in save() }
+                .help("Adds fixme-level Wine debug output to run logs.")
 
-    private func dangerSection(_ bottle: Bottle) -> some View {
-        Section("Danger Zone") {
-            Button("Kill all processes", role: .destructive) {
+            LabeledContent("Prefix path") {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text(bottle.prefixDir.path)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button {
+                        copyToClipboard(bottle.prefixDir.path)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Copy prefix path")
+                }
+            }
+
+            Button("Kill All Processes", role: .destructive) {
                 Task { await appState.stopAll(in: bottle) }
             }
         }

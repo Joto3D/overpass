@@ -12,9 +12,19 @@ extension AppState {
     /// from `.task { }`/`onAppear` without `await`.
     func loadEngines() {
         Task {
-            let engines = await EngineManager.shared.installedEngines()
-            self.installedEngines = engines
+            await loadEnginesNow()
         }
+    }
+
+    /// Awaited counterpart to `loadEngines()` — refreshes `installedEngines`
+    /// from disk and only returns once `installedEngines` reflects it.
+    /// Used at startup (`MainWindow`'s launch `.task`) so the setup-wizard
+    /// decision is made from a value that has actually finished loading,
+    /// rather than polling `installedEngines` on a timer and hoping it
+    /// landed in time.
+    func loadEnginesNow() async {
+        let engines = await EngineManager.shared.installedEngines()
+        self.installedEngines = engines
     }
 
     /// True while `release`'s (or any installed engine's, by id) install

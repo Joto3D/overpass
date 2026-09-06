@@ -100,14 +100,17 @@ struct ExtrasView: View {
 
     // MARK: - Winetricks
 
+    private var verbColumns: [GridItem] {
+        [GridItem(.flexible(), spacing: Theme.Spacing.l), GridItem(.flexible(), spacing: Theme.Spacing.l)]
+    }
+
     private func winetricksSection(bottle: Bottle, engine: InstalledEngine) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.m) {
             SectionHeader(title: "Winetricks", systemImage: "shippingbox")
 
-            VStack(spacing: 0) {
-                ForEach(Array(Winetricks.curated.enumerated()), id: \.offset) { index, item in
-                    if index > 0 { Divider() }
-                    verbRow(item, bottle: bottle, engine: engine)
+            LazyVGrid(columns: verbColumns, alignment: .leading, spacing: Theme.Spacing.m) {
+                ForEach(Winetricks.curated, id: \.verb) { item in
+                    verbCell(item, bottle: bottle, engine: engine)
                 }
             }
 
@@ -149,26 +152,24 @@ struct ExtrasView: View {
         .overpassCard()
     }
 
-    private func verbRow(_ item: (verb: String, title: String, blurb: String), bottle: Bottle, engine: InstalledEngine) -> some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.m) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(Theme.headingFont(14))
-                Text(item.blurb)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: Theme.Spacing.m)
-            Button("Install") {
+    private func verbCell(_ item: (verb: String, title: String, blurb: String), bottle: Bottle, engine: InstalledEngine) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(item.title) {
                 Task {
                     await runner.runVerb(item.verb, title: item.title, bottle: bottle, engine: engine, appState: appState)
                 }
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
             .disabled(runner.isBusy)
+
+            Text(item.blurb)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
-        .padding(.vertical, Theme.Spacing.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func installOtherVerb(bottle: Bottle, engine: InstalledEngine) {

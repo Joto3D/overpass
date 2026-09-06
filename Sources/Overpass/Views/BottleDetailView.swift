@@ -98,33 +98,38 @@ struct BottleDetailView: View {
 
     @ViewBuilder
     private func header(_ bottle: Bottle) -> some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.m) {
-            VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .center, spacing: Theme.Spacing.m) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(bottle.name)
                     .font(Theme.titleFont())
-                HStack(spacing: 8) {
-                    if let engine = appState.engine(for: bottle) {
-                        Chip(text: engine.displayName, systemImage: "gearshape.2")
-                    } else {
-                        Chip(text: "Engine missing", systemImage: "exclamationmark.triangle", tint: .orange)
-                    }
-                    Chip(text: bottle.windowsVersion.displayName, systemImage: "macwindow")
-                    if isRunning {
-                        Chip(text: "Running", systemImage: "play.fill", tint: .green)
-                    }
-                }
+                Text(subtitle(bottle))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Spacer()
             HStack(spacing: Theme.Spacing.s) {
-                toolsMenu(bottle)
+                Button("Run .exe…") { pickAndRun(bottle) }
+                    .buttonStyle(.borderedProminent)
                 Button("Stop") {
                     Task { await appState.stopAll(in: bottle) }
                 }
                 .disabled(!isRunning)
-                Button("Run .exe…") { pickAndRun(bottle) }
-                    .buttonStyle(.borderedProminent)
+                toolsMenu(bottle)
             }
         }
+    }
+
+    private func subtitle(_ bottle: Bottle) -> String {
+        var parts: [String] = []
+        if let engine = appState.engine(for: bottle) {
+            parts.append(engine.displayName)
+        } else {
+            parts.append("Engine missing")
+        }
+        parts.append(bottle.windowsVersion.displayName)
+        if isRunning { parts.append("Running") }
+        return parts.joined(separator: " \u{00b7} ")
     }
 
     @ViewBuilder
@@ -136,11 +141,22 @@ struct BottleDetailView: View {
             Button("Task Manager") { appState.runTool(name: "taskmgr", in: bottle) }
             Divider()
             Button("Open C: Drive in Finder") { appState.openDriveC(bottle) }
+            Divider()
+            Button("Rescan Programs") { Task { await rescanPrograms(bottle) } }
         } label: {
-            Label("Tools", systemImage: "wrench.and.screwdriver")
+            Image(systemName: "ellipsis.circle")
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .help("More tools")
+    }
+
+    private func rescanPrograms(_ bottle: Bottle) async {
+        let scanned = await ProgramScanner.scan(bottle: bottle)
+        let merged = ProgramScanner.merge(scanned: scanned, existing: bottle.pins)
+        var updated = bottle
+        updated.pins = merged
+        appState.updateBottle(updated)
     }
 
     private func pickAndRun(_ bottle: Bottle) {

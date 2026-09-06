@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// A bottle's Performance tab: a preset picker, engine-appropriate tuning
-/// sections (GPTK vs DXVK), Wine/registry knobs, display & input tweaks,
-/// the Metal HUD toggle, a free-form advanced-env table, and a live
-/// read-only preview of the resulting launch environment.
+/// A bottle's Performance tab: a preset picker, at most three settings
+/// cards (Graphics, Wine, Display & Input — each toggle carrying a short
+/// caption with the long explanation moved into a hover tooltip), and a
+/// collapsed "Advanced" disclosure holding the free-form env-var table and
+/// a live read-only preview of the resulting launch environment.
 ///
 /// Every env-var change saves immediately via `appState.updateBottle`;
 /// every registry-backed change also re-runs `PerformanceTuner.applyRegistry`
@@ -19,6 +20,7 @@ struct PerformanceView: View {
     @State private var pendingPreset: PerformanceSettings.Preset = .balanced
     @State private var isApplyingRegistry = false
     @State private var registryError: String?
+    @State private var isAdvancedExpanded = false
 
     @State private var videoMemoryDraft = ""
     @State private var frameRateDraft = ""
@@ -36,30 +38,14 @@ struct PerformanceView: View {
     var body: some View {
         if let bottle {
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.l) {
                     header
                     statusRow
                     presetSection
-
-                    if let engine {
-                        switch engine.kind {
-                        case .gptk:
-                            gptkSection
-                        case .wineStaging:
-                            if bottle.dxvk {
-                                dxvkSection
-                            } else {
-                                dxvkUnavailableNote
-                            }
-                        }
-                    }
-
+                    graphicsSection(bottle)
                     wineSection(bottle)
                     displayInputSection
-                    metalHUDSection(bottle)
-                    advancedEnvSection
-
-                    resultingEnvFooter(bottle, engine)
+                    advancedDisclosure(bottle, engine)
 
                     Text("Changes take effect on the next launch — a running program keeps the environment it started with.")
                         .font(.caption2)
@@ -135,6 +121,7 @@ struct PerformanceView: View {
             Text(pendingPreset.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
 
             HStack {
                 if settings.preset == .custom {
@@ -158,84 +145,97 @@ struct PerformanceView: View {
         persist(updated, in: bottle, applyRegistry: true)
     }
 
-    // MARK: - GPTK
+    // MARK: - Graphics (engine-specific + Metal HUD)
 
-    private var gptkSection: some View {
+    @ViewBuilder
+    private func graphicsSection(_ bottle: Bottle) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            SectionHeader(title: "Game Porting Toolkit", systemImage: "cpu")
+            SectionHeader(title: "Graphics", systemImage: "sparkles.tv")
 
-            toggleRow(
-                "MetalFX upscaling",
-                "D3DM_ENABLE_METALFX — converts a game's NVIDIA DLSS calls to Apple MetalFX upscaling. Only helps titles that support DLSS, and needs their MetalFX shim DLLs installed in system32 first.",
-                isOn: binding(\.metalFX)
-            )
-            toggleRow(
-                "Raytracing (DXR)",
-                "D3DM_SUPPORT_DXR — reports DirectX Raytracing support through D3DMetal. Off by default on M1/M2, on for M3+. Can crash titles with buggy RT paths.",
-                isOn: binding(\.raytracing)
-            )
-            toggleRow(
-                "D3DMetal logging",
-                "D3DM_ENABLE_LOGGING — verbose D3DMetal messages in the run log and Console.app. Useful when diagnosing a graphics crash; adds overhead otherwise.",
-                isOn: binding(\.d3dmLogging)
-            )
-        }
-        .padding(Theme.Spacing.l)
-        .overpassCard()
-    }
-
-    // MARK: - DXVK
-
-    private var dxvkSection: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            SectionHeader(title: "DXVK", systemImage: "bolt")
-
-            toggleRow(
-                "Async shader compilation",
-                "DXVK_ASYNC — compiles shaders on a background thread instead of stalling the frame. Removes most traversal stutter in open-world games; can briefly show a not-yet-compiled shader's placeholder.",
-                isOn: binding(\.dxvkAsync)
-            )
-
-            VStack(alignment: .leading, spacing: 2) {
-                Picker("HUD overlay", selection: binding(\.dxvkHud)) {
-                    ForEach(PerformanceSettings.DXVKHudLevel.allCases) { level in
-                        Text(level.displayName).tag(level)
+            if let engine {
+                switch engine.kind {
+                case .gptk:
+                    gptkToggles
+                case .wineStaging:
+                    if bottle.dxvk {
+                        dxvkToggles
+                    } else {
+                        Text("Install DXVK (Extras tab) to unlock async shader compilation, an FPS overlay, and a frame rate cap.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                Text("DXVK_HUD — an in-game overlay of FPS/frame time (and, on Full, GPU memory and pipeline counts) for comparing presets.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Divider()
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("Frame rate cap")
-                    TextField("Uncapped", text: $frameRateDraft)
-                        .frame(width: 80)
-                        .onSubmit { commitFrameRateCap() }
-                    Text("fps").foregroundStyle(.secondary)
-                    Button("Set") { commitFrameRateCap() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-                Text("DXVK_FRAME_RATE — caps rendering to reduce heat/fan noise or smooth frame pacing. Leave blank to uncap.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            toggleRow(
+                "Show Metal HUD",
+                caption: "Apple's built-in FPS/frame time overlay.",
+                help: "MTL_HUD_ENABLED — Apple's built-in overlay: live FPS and frame time in the corner of the window.",
+                isOn: bottleBinding(\.metalHUD, in: bottle)
+            )
         }
         .padding(Theme.Spacing.l)
         .overpassCard()
     }
 
-    private var dxvkUnavailableNote: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            SectionHeader(title: "DXVK", systemImage: "bolt.slash")
-            Text("Install DXVK for this bottle (Config tab) to unlock async shader compilation, the HUD overlay, and a frame rate cap.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var gptkToggles: some View {
+        toggleRow(
+            "MetalFX upscaling",
+            caption: "Converts DLSS calls to Apple MetalFX upscaling.",
+            help: "D3DM_ENABLE_METALFX — converts a game's NVIDIA DLSS calls to Apple MetalFX upscaling. Only helps titles that support DLSS, and needs their MetalFX shim DLLs installed in system32 first.",
+            isOn: binding(\.metalFX)
+        )
+        toggleRow(
+            "Raytracing (DXR)",
+            caption: "Reports DirectX Raytracing support through D3DMetal.",
+            help: "D3DM_SUPPORT_DXR — reports DirectX Raytracing support through D3DMetal. Off by default on M1/M2, on for M3+. Can crash titles with buggy RT paths.",
+            isOn: binding(\.raytracing)
+        )
+        toggleRow(
+            "D3DMetal logging",
+            caption: "Verbose D3DMetal messages in the run log.",
+            help: "D3DM_ENABLE_LOGGING — verbose D3DMetal messages in the run log and Console.app. Useful when diagnosing a graphics crash; adds overhead otherwise.",
+            isOn: binding(\.d3dmLogging)
+        )
+    }
+
+    @ViewBuilder
+    private var dxvkToggles: some View {
+        toggleRow(
+            "Async shader compilation",
+            caption: "Compiles shaders in the background to cut stutter.",
+            help: "DXVK_ASYNC — compiles shaders on a background thread instead of stalling the frame. Removes most traversal stutter in open-world games; can briefly show a not-yet-compiled shader's placeholder.",
+            isOn: binding(\.dxvkAsync)
+        )
+
+        pickerRow(
+            "HUD overlay",
+            caption: "In-game FPS/frame time overlay for comparing presets.",
+            help: "DXVK_HUD — an in-game overlay of FPS/frame time (and, on Full, GPU memory and pipeline counts) for comparing presets."
+        ) {
+            Picker("HUD overlay", selection: binding(\.dxvkHud)) {
+                ForEach(PerformanceSettings.DXVKHudLevel.allCases) { level in
+                    Text(level.displayName).tag(level)
+                }
+            }
+            .labelsHidden()
         }
-        .padding(Theme.Spacing.l)
-        .overpassCard()
+
+        fieldRow(
+            "Frame rate cap",
+            caption: "Caps rendering to reduce heat, fan noise, or stutter.",
+            help: "DXVK_FRAME_RATE — caps rendering to reduce heat/fan noise or smooth frame pacing. Leave blank to uncap."
+        ) {
+            TextField("Uncapped", text: $frameRateDraft)
+                .frame(width: 80)
+                .onSubmit { commitFrameRateCap() }
+            Text("fps").foregroundStyle(.secondary)
+            Button("Set") { commitFrameRateCap() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
     }
 
     private func commitFrameRateCap() {
@@ -253,51 +253,55 @@ struct PerformanceView: View {
 
             toggleRow(
                 "ESync",
-                "Fast userspace event-synchronization primitives. Large win for multi-threaded games; on by default.",
+                caption: "Fast sync primitives; a large win for multi-threaded games.",
+                help: "Fast userspace event-synchronization primitives. Large win for multi-threaded games; on by default.",
                 isOn: bottleBinding(\.esync, in: bottle)
             )
             toggleRow(
                 "MSync",
-                "Kernel-assisted sync, newer than ESync and often faster where the engine build supports it.",
+                caption: "Newer kernel-assisted sync, often faster where supported.",
+                help: "Kernel-assisted sync, newer than ESync and often faster where the engine build supports it.",
                 isOn: bottleBinding(\.msync, in: bottle)
             )
             toggleRow(
                 "Large address aware",
-                "WINE_LARGE_ADDRESS_AWARE — lets a 32-bit game use up to 4GB instead of 2GB, avoiding out-of-memory crashes. Only takes effect on Wine builds that implement the flag (Lutris/GE-patched forks); a no-op otherwise, so treat it as worth trying rather than guaranteed.",
+                caption: "Lets 32-bit games use up to 4GB instead of 2GB.",
+                help: "WINE_LARGE_ADDRESS_AWARE — lets a 32-bit game use up to 4GB instead of 2GB, avoiding out-of-memory crashes. Only takes effect on Wine builds that implement the flag (Lutris/GE-patched forks); a no-op otherwise.",
                 isOn: binding(\.largeAddressAware)
             )
             toggleRow(
                 "Disable CSMT",
-                "HKCU\\Software\\Wine\\Direct3D\\csmt=0 — turns off Command Stream Multi-Threading. On (faster) by default; disabling it can fix rendering corruption or hangs in a handful of older, finicky titles.",
+                caption: "Can fix rendering glitches in a few older titles.",
+                help: "HKCU\\Software\\Wine\\Direct3D\\csmt=0 — turns off Command Stream Multi-Threading. On (faster) by default; disabling it can fix rendering corruption or hangs in a handful of older, finicky titles.",
                 isOn: binding(\.disableCSMT, registryBacked: true)
             )
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("Video memory")
-                    TextField("Auto", text: $videoMemoryDraft)
-                        .frame(width: 80)
-                        .onSubmit { commitVideoMemory() }
-                    Text("MB").foregroundStyle(.secondary)
-                    Button("Set") { commitVideoMemory() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-                Text("HKCU\\Software\\Wine\\Direct3D\\VideoMemorySize — reported VRAM for wined3d's own renderer. Only matters when DXVK isn't handling the game; leave blank to auto-detect.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            fieldRow(
+                "Video memory",
+                caption: "Reported VRAM for Wine's own D3D renderer.",
+                help: "HKCU\\Software\\Wine\\Direct3D\\VideoMemorySize — reported VRAM for wined3d's own renderer. Only matters when DXVK isn't handling the game; leave blank to auto-detect."
+            ) {
+                TextField("Auto", text: $videoMemoryDraft)
+                    .frame(width: 80)
+                    .onSubmit { commitVideoMemory() }
+                Text("MB").foregroundStyle(.secondary)
+                Button("Set") { commitVideoMemory() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            pickerRow(
+                "wined3d backend",
+                caption: "Backend used only when DXVK isn't handling rendering.",
+                help: "HKCU\\Software\\Wine\\Direct3D\\renderer — the backend wined3d's own D3D9/10/11 implementation targets when DXVK isn't overriding it. OpenGL is the most compatible; Vulkan is newer and often faster but less battle-tested."
+            ) {
                 Picker("wined3d backend", selection: binding(\.renderer, registryBacked: true)) {
                     Text("Default (OpenGL)").tag(PerformanceSettings.WineD3DRenderer?.none)
                     ForEach(PerformanceSettings.WineD3DRenderer.allCases) { renderer in
                         Text(renderer.displayName).tag(Optional(renderer))
                     }
                 }
-                Text("HKCU\\Software\\Wine\\Direct3D\\renderer — the backend wined3d's own D3D9/10/11 implementation targets when DXVK isn't overriding it. OpenGL is the most compatible; Vulkan is newer and often faster but less battle-tested.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .labelsHidden()
             }
         }
         .padding(Theme.Spacing.l)
@@ -318,17 +322,20 @@ struct PerformanceView: View {
 
             toggleRow(
                 "Retina mode",
-                "Mac Driver\\RetinaMode=Y — renders at full display pixel density instead of a scaled logical resolution. Sharper text and UI, but real GPU cost on 4K/5K/6K Retina displays, and some games' windows appear tiny until their in-game resolution is adjusted.",
+                caption: "Sharper text, but heavier on 4K/5K/6K displays.",
+                help: "Mac Driver\\RetinaMode=Y — renders at full display pixel density instead of a scaled logical resolution. Sharper text and UI, but real GPU cost on 4K/5K/6K Retina displays, and some games' windows appear tiny until their in-game resolution is adjusted.",
                 isOn: binding(\.retinaMode, registryBacked: true)
             )
             toggleRow(
                 "Option key is Alt",
-                "Mac Driver\\Left/RightOptionIsAlt=Y — makes both Option keys act as Alt inside the bottle, matching PC shortcuts (Alt+Tab, Alt+F4, weapon-wheel binds).",
+                caption: "Matches PC shortcuts like Alt+Tab and Alt+F4.",
+                help: "Mac Driver\\Left/RightOptionIsAlt=Y — makes both Option keys act as Alt inside the bottle, matching PC shortcuts (Alt+Tab, Alt+F4, weapon-wheel binds).",
                 isOn: binding(\.optionAsAlt, registryBacked: true)
             )
             toggleRow(
                 "Precise trackpad scrolling",
-                "Mac Driver\\UsePreciseScrolling — smoother scroll deltas from trackpads/Magic Mouse. Turn off if a game shows exaggerated zoom or repaint glitches on scroll input.",
+                caption: "Smoother scroll deltas from trackpads and Magic Mouse.",
+                help: "Mac Driver\\UsePreciseScrolling — smoother scroll deltas from trackpads/Magic Mouse. Turn off if a game shows exaggerated zoom or repaint glitches on scroll input.",
                 isOn: binding(\.preciseScrolling, registryBacked: true)
             )
         }
@@ -336,29 +343,27 @@ struct PerformanceView: View {
         .overpassCard()
     }
 
-    // MARK: - Metal HUD
+    // MARK: - Advanced (env table + resulting environment)
 
-    private func metalHUDSection(_ bottle: Bottle) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            SectionHeader(title: "Metal HUD", systemImage: "gauge.with.dots.needle.67percent")
-            Toggle("Show Metal HUD", isOn: bottleBinding(\.metalHUD, in: bottle))
-            Text("MTL_HUD_ENABLED — Apple's built-in overlay: live FPS and frame time in the corner of the window.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(PerformanceTuner.benchmarkHint)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    @ViewBuilder
+    private func advancedDisclosure(_ bottle: Bottle, _ engine: InstalledEngine?) -> some View {
+        DisclosureGroup(isExpanded: $isAdvancedExpanded) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.l) {
+                advancedEnvTable
+                Divider()
+                resultingEnvList(bottle, engine)
+            }
+            .padding(.top, Theme.Spacing.m)
+        } label: {
+            SectionHeader(title: "Advanced", systemImage: "terminal")
         }
         .padding(Theme.Spacing.l)
         .overpassCard()
     }
 
-    // MARK: - Advanced env
-
-    private var advancedEnvSection: some View {
+    private var advancedEnvTable: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            SectionHeader(title: "Advanced Environment", systemImage: "terminal")
-            Text("Merged in last, so these override every toggle above. Use this for the Custom preset or a one-off engine variable not modeled here.")
+            Text("Custom environment variables, merged in last so they override every toggle above.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -394,8 +399,6 @@ struct PerformanceView: View {
                     .disabled(newEnvKey.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(Theme.Spacing.l)
-        .overpassCard()
     }
 
     private func addEnvVar() {
@@ -407,12 +410,12 @@ struct PerformanceView: View {
         newEnvValue = ""
     }
 
-    // MARK: - Resulting environment footer
-
     @ViewBuilder
-    private func resultingEnvFooter(_ bottle: Bottle, _ engine: InstalledEngine?) -> some View {
+    private func resultingEnvList(_ bottle: Bottle, _ engine: InstalledEngine?) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            SectionHeader(title: "What This Bottle Will Launch With", systemImage: "list.bullet.rectangle")
+            Text("What this bottle will launch with")
+                .font(Theme.headingFont(12))
+                .foregroundStyle(.secondary)
 
             if let engine {
                 let base = WineRunner.environment(for: bottle, engine: engine)
@@ -433,21 +436,57 @@ struct PerformanceView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(Theme.Spacing.l)
-        .overpassCard()
     }
 
-    // MARK: - Bindings / persistence
+    // MARK: - Row builders
 
+    /// A toggle with a short (≤ 12 word) caption underneath and the full
+    /// explanation moved into a hover tooltip via `.help`.
     @ViewBuilder
-    private func toggleRow(_ title: String, _ caption: String, isOn: Binding<Bool>) -> some View {
+    private func toggleRow(_ title: String, caption: String, help: String, isOn: Binding<Bool>) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Toggle(title, isOn: isOn)
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+        .help(help)
     }
+
+    /// A labeled control (Picker) with the same short-caption/tooltip
+    /// treatment as `toggleRow`.
+    @ViewBuilder
+    private func pickerRow<Content: View>(_ title: String, caption: String, help: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                Spacer()
+                content()
+            }
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .help(help)
+    }
+
+    /// A labeled row with free-form trailing controls (a text field + unit
+    /// + Set button), same short-caption/tooltip treatment.
+    @ViewBuilder
+    private func fieldRow<Content: View>(_ title: String, caption: String, help: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                content()
+            }
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .help(help)
+    }
+
+    // MARK: - Bindings / persistence
 
     /// A binding into `settings` that, on every write, marks the bottle
     /// `.custom` (unless the write came from `applyPreset`, which sets

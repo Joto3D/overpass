@@ -112,8 +112,31 @@ extension AppState {
             updateBottle(updated)
 
             let recordID = record.id
+            let prefixPath = bottle.prefixDir.path
             Task.detached { [weak self] in
                 process.waitUntilExit()
+                // The process we're watching is `wine ... start /unix
+                // <exe>` — Wine's launcher hands the real Windows process
+                // off to wineserver and exits almost immediately, well
+                // before that process actually finishes. Waiting on it
+                // alone flips `isRunning` off (and the Stop button back to
+                // disabled) within a second or two of every launch, no
+                // matter how long the program itself keeps running. Keep
+                // polling for any process still alive under this bottle's
+                // prefix before declaring the run over.
+                //
+                // `pgrep -f <prefix>` (what `WineRunner.stop` uses to
+                // decide whether to escalate) can't be reused here: none of
+                // the wine64-preloader children actually carry the prefix
+                // path in their argv, so it never matches. `lsof +D
+                // <prefix>` instead lists every process with an open file
+                // (cwd, loaded dll, the exe itself, ...) anywhere under the
+                // prefix, which every process in the bottle always has.
+                while true {
+                    guard let result = try? await ShellRunner.run("/usr/sbin/lsof", ["+D", prefixPath]),
+                          !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { break }
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                }
                 await MainActor.run {
                     guard let self else { return }
                     if let index = self.runs.firstIndex(where: { $0.id == recordID }) {

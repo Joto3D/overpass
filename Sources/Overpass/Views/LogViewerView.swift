@@ -25,7 +25,15 @@ struct LogViewerView: View {
                     .tag(url)
             }
             .frame(width: 220)
-            .listStyle(.sidebar)
+            .padding(.trailing, Theme.Spacing.s)
+            // `.sidebar` pulls in the system's vibrant sidebar material,
+            // which is meant for the outermost window sidebar — nested
+            // inside a detail view it renders with a tint that doesn't
+            // track Theme's dark surface, so it visibly clashes with the
+            // rest of the app. `.plain` (with the system list background
+            // hidden) keeps it flush with Theme's own background instead.
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
 
             Divider()
 
@@ -37,8 +45,12 @@ struct LogViewerView: View {
                         .truncationMode(.middle)
                     Spacer()
                     Button("Reveal in Finder") { reveal() }
+                        .buttonStyle(.quiet)
+                        .fixedSize()
                         .disabled(selected == nil)
                     Button("Clear Logs") { clearLogs() }
+                        .buttonStyle(.quiet)
+                        .fixedSize()
                         .disabled(logFiles.isEmpty)
                 }
 
@@ -55,7 +67,13 @@ struct LogViewerView: View {
             }
             .padding(Theme.Spacing.m)
         }
-        .task { refresh() }
+        // Keyed on `bottleID` (not a bare `.task { }`) so switching the
+        // sidebar selection while already on the Logs tab re-runs this —
+        // `BottleDetailView` reuses the same `LogViewerView` instance
+        // across bottles (its identity doesn't change, only the
+        // `bottleID` parameter does), so without this the list/content
+        // silently kept showing the previous bottle's logs.
+        .task(id: bottleID) { refresh() }
         .onChange(of: selected) { _, _ in loadSelectedContent() }
         .task(id: isBottleRunning) {
             guard isBottleRunning else { return }

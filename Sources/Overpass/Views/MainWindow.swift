@@ -8,6 +8,7 @@ import SwiftUI
 struct MainWindow: View {
     @Environment(AppState.self) private var appState
     @State private var showNewBottleSheet = false
+    @State private var showImportBottleSheet = false
     @State private var bottlePendingDelete: Bottle?
 
     var body: some View {
@@ -16,7 +17,7 @@ struct MainWindow: View {
             List(selection: $appState.selection) {
                 Section("Bottles") {
                     ForEach(appState.bottles) { bottle in
-                        Label(bottle.name, systemImage: "cylinder")
+                        BottleSidebarRow(bottle: bottle, engine: appState.engine(for: bottle))
                             .tag(AppState.SidebarItem.bottle(bottle.id))
                             .contextMenu {
                                 Button("Delete…", role: .destructive) {
@@ -25,7 +26,7 @@ struct MainWindow: View {
                             }
                     }
                 }
-                Section("Overpass") {
+                Section("Library") {
                     Label("Install App", systemImage: "square.and.arrow.down.on.square")
                         .tag(AppState.SidebarItem.installApps)
                     Label("Engines", systemImage: "gearshape.2")
@@ -37,10 +38,11 @@ struct MainWindow: View {
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        showNewBottleSheet = true
+                    Menu {
+                        Button("New Bottle…") { showNewBottleSheet = true }
+                        Button("Import Bottle…") { showImportBottleSheet = true }
                     } label: {
-                        Label("New Bottle", systemImage: "plus")
+                        Label("Add", systemImage: "plus")
                     }
                 }
             }
@@ -92,6 +94,9 @@ struct MainWindow: View {
         .sheet(isPresented: $showNewBottleSheet) {
             NewBottleSheet()
         }
+        .sheet(isPresented: $showImportBottleSheet) {
+            ImportBottleSheet()
+        }
         .sheet(isPresented: $appState.showSetupWizard) {
             SetupWizardView()
         }
@@ -103,17 +108,13 @@ struct MainWindow: View {
         }
         .task {
             try? Paths.ensureAll()
-            appState.loadEngines()
+            // Await the engine load directly (rather than firing it off and
+            // polling `installedEngines` on a timer) so the setup-wizard
+            // decision below is made from a value that has actually
+            // finished loading — deterministic, and a normal relaunch with
+            // everything already installed never flashes the wizard.
+            await appState.loadEnginesNow()
             appState.loadBottles()
-            // `loadEngines()` refreshes `installedEngines` via an internal
-            // detached `Task`, so it isn't necessarily populated yet on the
-            // very next line. Give it a moment to land before deciding
-            // whether to show the setup wizard, so a normal relaunch with
-            // everything already installed doesn't flash it.
-            for _ in 0..<20 {
-                if !appState.installedEngines.isEmpty || appState.bottles.isEmpty { break }
-                try? await Task.sleep(nanoseconds: 50_000_000)
-            }
             if appState.installedEngines.isEmpty || appState.bottles.isEmpty {
                 appState.showSetupWizard = true
             } else if appState.selection == nil {

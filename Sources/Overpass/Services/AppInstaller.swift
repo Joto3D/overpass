@@ -62,8 +62,15 @@ final class AppInstallState {
 /// verbs, downloads the installer, runs it, waits for every process it
 /// spawned to settle back down, then rescans the bottle's programs and
 /// pins the app's launcher. All progress goes through
-/// `AppInstallState.shared`; every failure is also surfaced through
-/// `appState.report(_:)` so it isn't silent.
+/// `AppInstallState.shared`.
+///
+/// The actual step-by-step logic lives in `run(_:bottle:engine:persist:)`,
+/// which has no `AppState` dependency — only `AppInstallState.shared` (for
+/// UI progress) and a `persist` callback for writing the bottle's updated
+/// metadata as it changes. `install(_:into:engine:appState:)` is a thin
+/// wrapper around it for the UI (`AppCatalogView`); `DebugInstallCheck`
+/// calls `run` directly so the headless `--check-install` smoke test
+/// doesn't need to construct a full `AppState`.
 enum AppInstaller {
     struct InstallError: LocalizedError {
         let message: String
@@ -77,17 +84,49 @@ enum AppInstaller {
         "wineserver", "services.exe", "explorer.exe", "plugplay.exe", "winedevice.exe", "rpcss.exe",
     ]
 
+    /// UI entry point. Failures are routed through `appState.report(_:context:)`
+    /// so nothing fails silently; `AppInstallState.shared.lastError` also
+    /// carries the message for the detail sheet.
     @MainActor
     static func install(_ app: CatalogApp, into bottle: Bottle, engine: InstalledEngine, appState: AppState) async {
+        do {
+            _ = try await run(app, bottle: bottle, engine: engine) { updated in
+                appState.updateBottle(updated)
+            }
+        } catch {
+            appState.report(error, context: "Installing \(app.name)")
+        }
+    }
+
+    /// The install steps themselves — Windows-version switch, winetricks
+    /// prerequisites, download, run, wait-for-settle, rescan+pin — with no
+    /// `AppState` dependency. Owns the full `AppInstallState.shared`
+    /// lifecycle (`begin`/`finish`) so any caller, UI or headless, gets
+    /// consistent progress reporting for free. `persist` is called every
+    /// time the bottle's metadata changes (Windows version switch, final
+    /// pins) so the caller can save it — `appState.updateBottle` for the
+    /// UI, `BottleStore.save` for a headless caller — and the final,
+    /// fully-updated `Bottle` is also returned so the caller isn't forced
+    /// to rely on `persist` alone. Rethrows on failure after recording the
+    /// error on `AppInstallState.shared`.
+    @MainActor
+    @discardableResult
+    static func run(
+        _ app: CatalogApp,
+        bottle: Bottle,
+        engine: InstalledEngine,
+        persist: (Bottle) -> Void = { _ in }
+    ) async throws -> Bottle {
         let state = AppInstallState.shared
         state.begin(app.id)
 
         do {
             var bottle = bottle
-            try await applyRecommendedWindowsIfNeeded(app, bottle: &bottle, engine: engine, appState: appState, state: state)
+            try await applyRecommendedWindowsIfNeeded(app, bottle: &bottle, engine: engine, persist: persist, state: state)
 
             for verb in app.winetricksVerbs {
                 state.set(phase: "Installing prerequisite \(verb)…")
+                state.log("$ /bin/bash <winetricks> -q \(verb)")
                 try await Winetricks.run(verb: verb, bottle: bottle, engine: engine) { line in
                     Task { @MainActor in state.log(line) }
                 }
@@ -106,13 +145,15 @@ enum AppInstaller {
             }
 
             state.set(phase: "Scanning installed programs…", progress: nil)
-            await rescanAndPin(app, bottle: &bottle, appState: appState)
+            bottle = await rescanAndPin(app, bottle: bottle)
+            persist(bottle)
 
             state.finish(error: nil)
+            return bottle
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             state.finish(error: message)
-            appState.report(error, context: "Installing \(app.name)")
+            throw error
         }
     }
 
@@ -123,13 +164,14 @@ enum AppInstaller {
         _ app: CatalogApp,
         bottle: inout Bottle,
         engine: InstalledEngine,
-        appState: AppState,
+        persist: (Bottle) -> Void,
         state: AppInstallState
     ) async throws {
         guard app.recommendedWindows != bottle.windowsVersion else { return }
         state.set(phase: "Switching bottle to \(app.recommendedWindows.displayName)…")
         bottle.windowsVersion = app.recommendedWindows
-        appState.updateBottle(bottle)
+        persist(bottle)
+        state.log("$ \(engine.wineBinary.path) winecfg -v \(app.recommendedWindows.winecfgValue)")
         try await WineRunner.applyWindowsVersion(app.recommendedWindows, bottle: bottle, engine: engine)
         state.log("Set Windows version to \(app.recommendedWindows.displayName) for \(app.name).")
     }
@@ -181,6 +223,9 @@ enum AppInstaller {
             arguments = [localURL.path] + app.silentArgs
         }
 
+        let commandLine = (["$", engine.wineBinary.path] + arguments).joined(separator: " ")
+        await MainActor.run { state.log(commandLine) }
+
         // Tail the log file into `state.output` while the installer runs,
         // since `WineRunner.runTool` only hands back full stdout/stderr
         // once the process exits.
@@ -210,40 +255,94 @@ enum AppInstaller {
         }
     }
 
-    /// Polls `pgrep -fl <prefix>` every 2s (up to 10 minutes) until only
+    /// Polls `pgrep -fl <prefix>` every 2s (up to 2 minutes) until only
     /// idle Wine housekeeping processes remain — silent installers
     /// frequently spawn a second process and let the first exit, so
     /// "the process we launched exited" doesn't mean installation is done.
+    /// Two consecutive idle polls are required before returning, so a
+    /// process that briefly disappears while re-executing itself (common
+    /// for self-extracting installers that unpack to a temp dir and
+    /// relaunch from there) doesn't cause an early "done".
+    ///
+    /// The deadline is 2 minutes, not 10 — `runInstaller` has already
+    /// awaited the top-level installer process to exit by the time this
+    /// runs, so this is only catching a *second*, detached process the
+    /// installer spawned before exiting; every silent installer in the
+    /// catalog is documented to finish in well under a minute, so 10
+    /// minutes of polling after that is dead time on any interactive
+    /// installer (no silent flags) that simply never spawns a second
+    /// process — this used to make `waitForInstallerToSettle` sit through
+    /// the full deadline for e.g. Battle.net/EA app before falling
+    /// through to the (equally long) rescan.
     private static func waitForInstallerToSettle(bottle: Bottle) async {
-        let deadline = Date().addingTimeInterval(10 * 60)
+        let deadline = Date().addingTimeInterval(2 * 60)
+        var consecutiveIdle = 0
         while Date() < deadline {
             guard let result = try? await ShellRunner.run("/usr/bin/pgrep", ["-fl", bottle.prefixDir.path]) else { return }
             let lines = result.stdout.split(separator: "\n").map(String.init)
             let stillBusy = lines.contains { line in
                 !idleProcessNames.contains { name in line.lowercased().contains(name) }
             }
-            if !stillBusy { return }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if stillBusy {
+                consecutiveIdle = 0
+            } else {
+                consecutiveIdle += 1
+                if consecutiveIdle >= 2 { return }
+            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
         }
     }
 
     // MARK: - Post-install: rescan + pin
 
     @MainActor
-    private static func rescanAndPin(_ app: CatalogApp, bottle: inout Bottle, appState: AppState) async {
+    private static func rescanAndPin(_ app: CatalogApp, bottle: Bottle) async -> Bottle {
+        var bottle = bottle
         let scanned = await ProgramScanner.scan(bottle: bottle)
         bottle.pins = ProgramScanner.merge(scanned: scanned, existing: bottle.pins)
 
         for hint in app.launchExeHints {
-            let candidate = bottle.driveC.appendingPathComponent(hint)
-            guard FileManager.default.fileExists(atPath: candidate.path) else { continue }
-            if !bottle.pins.contains(where: { $0.exePath == candidate.path }) {
+            guard let candidate = resolveHint(hint, driveC: bottle.driveC) else { continue }
+            if let existingIndex = bottle.pins.firstIndex(where: { $0.exePath == candidate.path }) {
+                // `ProgramScanner.scan` above already finds every bare
+                // `.exe` under Program Files on its own, including this
+                // one — it would have just pinned it under its own
+                // filename (e.g. "7zFM") with no launch args. Upgrade
+                // that generic pin to the catalog's app name (and launch
+                // args, e.g. Steam's steamwebhelper workaround flags) so
+                // `AppCatalogDetailSheet.launchPin`'s `pins.first {
+                // $0.name == app.name }` lookup — and the "Launch <App>"
+                // button it drives — actually finds this pin. Skip a pin
+                // the user has since customized (renamed, or added their
+                // own args) rather than clobbering it.
+                if !bottle.pins[existingIndex].isUserAdded {
+                    bottle.pins[existingIndex].name = app.name
+                    if bottle.pins[existingIndex].args.isEmpty {
+                        bottle.pins[existingIndex].args = app.launchArgs
+                    }
+                }
+            } else {
                 bottle.pins.append(PinnedProgram(name: app.name, exePath: candidate.path, args: app.launchArgs, isUserAdded: false))
             }
             break
         }
 
-        appState.updateBottle(bottle)
+        return bottle
+    }
+
+    /// Resolves a catalog hint like `"Program Files/7-Zip/7zFM.exe"`
+    /// (forward slashes, as written in `CatalogApp.launchExeHints`)
+    /// against `driveC`. Tries the exact-case join first, then falls back
+    /// to `ShellLink.windowsPathToUnix`'s case-insensitive component walk
+    /// — some installers create folders with different casing than the
+    /// hint (e.g. "Program Files (x86)" written by an installer as
+    /// "Program Files (X86)"), and Wine prefixes are case-sensitive on
+    /// disk even though Windows paths are nominally case-insensitive.
+    private static func resolveHint(_ hint: String, driveC: URL) -> URL? {
+        let direct = driveC.appendingPathComponent(hint)
+        if FileManager.default.fileExists(atPath: direct.path) { return direct }
+        let windowsPath = "C:\\" + hint.replacingOccurrences(of: "/", with: "\\")
+        return ShellLink.windowsPathToUnix(windowsPath, driveC: driveC)
     }
 }
 

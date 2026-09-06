@@ -14,11 +14,17 @@ proprietary and nothing phones home.
 - **Bottles** — create isolated Wine prefixes per Windows version
   (7/10/11), each with its own engine, ESync/MSync, Metal HUD, and
   environment variables.
+- **Install App** — a built-in catalog of common Windows apps (Steam,
+  7-Zip, Notepad++, redistributables, ...) that downloads the installer
+  and runs it in a bottle for you, CrossOver-style.
 - **Run** — pick an `.exe`/`.msi` with a file picker, drag one onto a
   bottle, or set Overpass as the default handler in Finder.
 - **Programs** — Overpass scans a bottle's Start Menu, Desktop, and
   `Program Files` for installed programs and turns them into a launchable
   grid; pin your own too.
+- **Performance** — per-bottle tuning presets and advanced Wine/Metal
+  settings (threading, FSR/MetalFX upscaling, frame pacing) for squeezing
+  more out of games.
 - **Extras** — one-click Winetricks verbs (Visual C++, .NET, fonts,
   codecs, ...) and a DXVK toggle for better DirectX 9/10/11 support on
   Wine-staging bottles.
@@ -84,6 +90,18 @@ open build/Overpass.app
 `build/Overpass.app` (executable, `Info.plist`, icon), and codesigns it
 ad-hoc so it launches like any other downloaded app (right-click → Open
 on first run, per Gatekeeper).
+
+### Headless smoke test
+
+`build/Overpass.app/Contents/MacOS/Overpass --check [engine-id]` runs a
+full round trip with no UI: installs the given engine (`gptk-3.0-3` by
+default, from the download cache when possible), creates a throwaway
+bottle, launches Notepad, confirms it's alive, stops it, and deletes the
+bottle — printing `CHECK OK` and exiting `0`, or `CHECK FAILED: ...` and
+exiting non-zero on the first failure. Pass `--keep` to leave the test
+bottle in place for inspection instead of deleting it. Useful in CI or
+after changing `EngineManager`/`WineRunner` without wanting to click
+through the UI by hand.
 
 ## Data locations
 

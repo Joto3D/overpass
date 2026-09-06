@@ -2,58 +2,65 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// A bottle's "Programs" tab: a grid of launchable pins (scanned from the
-/// bottle's Desktop/Start Menu/Program Files, plus anything the user has
-/// added by hand), a search field, Rescan/Add toolbar, and a "System"
-/// section for the built-in Wine tools that don't live inside `drive_c`
-/// at all (Notepad, WordPad, Explorer, Task Manager, Control Panel).
+/// A bottle's "Programs" tab: a full-width list of launchable pins
+/// (scanned from the bottle's Desktop/Start Menu/Program Files, plus
+/// anything the user has added by hand), a compact search + filter +
+/// rescan/add toolbar, and — via a filter menu — the option to reveal
+/// system and helper pins that are hidden by default.
 struct ProgramsGridView: View {
     let bottleID: UUID
     @Environment(AppState.self) private var appState
 
     @State private var searchText = ""
     @State private var isScanning = false
-    @State private var isSystemExpanded = false
     @State private var editingPin: PinnedProgram?
     @State private var editingArgs = ""
 
-    private let columns = [GridItem(.adaptive(minimum: 148, maximum: 180), spacing: Theme.Spacing.m)]
+    @AppStorage("overpass.programs.showSystem") private var showSystem = false
+    @AppStorage("overpass.programs.showHelpers") private var showHelpers = false
 
     private var bottle: Bottle? {
         appState.bottles.first { $0.id == bottleID }
     }
 
-    private var filteredPins: [PinnedProgram] {
+    private var visiblePins: [PinnedProgram] {
         guard let bottle else { return [] }
-        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return bottle.pins }
-        return bottle.pins.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        return bottle.pins.filter { pin in
+            if pin.isSystem && !showSystem { return false }
+            if pin.isHelper && !showHelpers { return false }
+            return true
+        }
+    }
+
+    private var filteredPins: [PinnedProgram] {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return visiblePins }
+        return visiblePins.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
         if let bottle {
-            VStack(alignment: .leading, spacing: Theme.Spacing.l) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                 toolbar(bottle)
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                        if bottle.pins.isEmpty {
-                            emptyState
-                        } else if filteredPins.isEmpty {
-                            Text("No programs match \u{201c}\(searchText)\u{201d}.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, Theme.Spacing.xl)
-                        } else {
-                            LazyVGrid(columns: columns, spacing: Theme.Spacing.m) {
-                                ForEach(filteredPins) { pin in
-                                    ProgramCard(pin: pin, bottle: bottle, onEditArgs: { beginEditingArgs(pin) })
+                if bottle.pins.isEmpty {
+                    emptyState(message: "No programs found yet.", detail: "Install something with Run .exe\u{2026} or Rescan.")
+                } else if filteredPins.isEmpty {
+                    emptyState(
+                        message: "No programs match \u{201c}\(searchText)\u{201d}.",
+                        detail: nil
+                    )
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(filteredPins) { pin in
+                                ProgramRow(pin: pin, bottle: bottle, onEditArgs: { beginEditingArgs(pin) })
+                                if pin.id != filteredPins.last?.id {
+                                    Divider()
                                 }
                             }
                         }
-
-                        systemSection(bottle)
+                        .overpassCard(cornerRadius: Theme.Radius.card)
                     }
-                    .padding(.bottom, Theme.Spacing.xl)
                 }
             }
             .sheet(item: $editingPin) { pin in
@@ -76,73 +83,48 @@ struct ProgramsGridView: View {
             }
             .padding(.horizontal, Theme.Spacing.s)
             .padding(.vertical, 6)
-            .frame(maxWidth: 240)
+            .frame(maxWidth: .infinity)
             .overpassCard(cornerRadius: Theme.Radius.row)
-
-            Spacer()
 
             if isScanning {
                 ProgressView().controlSize(.small)
             }
 
-            Button {
-                Task { await rescan(bottle) }
+            Menu {
+                Toggle("Show system programs", isOn: $showSystem)
+                Toggle("Show helper executables", isOn: $showHelpers)
             } label: {
-                Label("Rescan", systemImage: "arrow.clockwise")
+                Image(systemName: "line.3.horizontal.decrease.circle")
             }
-            .buttonStyle(.quiet)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Filter programs")
+
+            IconToolbarButton(systemImage: "arrow.clockwise", help: "Rescan") {
+                Task { await rescan(bottle) }
+            }
             .disabled(isScanning)
 
-            Button {
+            IconToolbarButton(systemImage: "plus", help: "Add program\u{2026}") {
                 addProgram(bottle)
-            } label: {
-                Label("Add program\u{2026}", systemImage: "plus")
             }
-            .buttonStyle(.bordered)
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: Theme.Spacing.s) {
-            Image(systemName: "square.grid.2x2")
-                .font(.system(size: 32))
-                .foregroundStyle(.secondary)
-            Text("No programs found yet.")
-                .font(Theme.headingFont(15))
-            Text("Install something with Run .exe\u{2026} or Rescan.")
+    private func emptyState(message: String, detail: String?) -> some View {
+        VStack(spacing: 4) {
+            Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            if let detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, Theme.Spacing.xl * 2)
     }
-
-    // MARK: - System tools section
-
-    private func systemSection(_ bottle: Bottle) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            DisclosureGroup(isExpanded: $isSystemExpanded) {
-                LazyVGrid(columns: columns, spacing: Theme.Spacing.m) {
-                    ForEach(Self.systemTools, id: \.toolName) { tool in
-                        SystemToolCard(name: tool.displayName, symbol: tool.symbol) {
-                            appState.runTool(name: tool.toolName, in: bottle)
-                        }
-                    }
-                }
-                .padding(.top, Theme.Spacing.s)
-            } label: {
-                SectionHeader(title: "System", systemImage: "wrench.and.screwdriver")
-            }
-        }
-    }
-
-    private static let systemTools: [(toolName: String, displayName: String, symbol: String)] = [
-        ("notepad", "Notepad", "note.text"),
-        ("wordpad", "WordPad", "doc.richtext"),
-        ("explorer", "Explorer", "folder"),
-        ("taskmgr", "Task Manager", "chart.bar"),
-        ("control", "Control Panel", "slider.horizontal.3"),
-    ]
 
     // MARK: - Actions
 
@@ -203,58 +185,64 @@ struct ProgramsGridView: View {
     }
 }
 
-// MARK: - Program card
+// MARK: - Program row
 
-private struct ProgramCard: View {
+private struct ProgramRow: View {
     @Environment(AppState.self) private var appState
     let pin: PinnedProgram
     let bottle: Bottle
     let onEditArgs: () -> Void
 
-    private var pathTail: String {
-        let components = pin.exePath.split(separator: "/")
-        return components.suffix(2).joined(separator: "/")
+    private var subtitle: String {
+        pathRelativeToDriveC(pin.exePath, bottle: bottle)
     }
 
     var body: some View {
-        VStack(spacing: Theme.Spacing.s) {
+        HStack(spacing: Theme.Spacing.m) {
             ZStack {
-                RoundedRectangle(cornerRadius: Theme.Radius.icon, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(.regularMaterial)
-                Image(systemName: "app.fill")
-                    .font(.system(size: 30))
+                Image(systemName: pin.isSystem ? "gearshape" : "app.fill")
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 56, height: 56)
+            .frame(width: 28, height: 28)
 
-            Text(pin.name)
-                .font(Theme.headingFont(13))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity)
-
-            Text(pathTail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            Button("Run") {
-                run()
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text(pin.name)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    if pin.isSystem {
+                        Chip(text: "System", tint: .secondary)
+                    }
+                }
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .buttonStyle(.quiet)
-            .controlSize(.small)
+
+            Spacer(minLength: Theme.Spacing.m)
+
+            Button("Run") { run() }
+                .buttonStyle(.quiet)
+                .controlSize(.small)
+                .fixedSize()
         }
-        .padding(Theme.Spacing.m)
-        .overpassCard()
+        .padding(.horizontal, Theme.Spacing.m)
+        .padding(.vertical, Theme.Spacing.s)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { run() }
         .contextMenu {
             Button("Run") { run() }
-            Button("Edit arguments\u{2026}") { onEditArgs() }
+            Button("Edit Arguments\u{2026}") { onEditArgs() }
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: pin.exePath)])
             }
             Divider()
-            Button("Remove pin", role: .destructive) { removePin() }
+            Button("Remove", role: .destructive) { removePin() }
         }
     }
 
@@ -266,36 +254,5 @@ private struct ProgramCard: View {
         var updated = bottle
         updated.pins.removeAll { $0.id == pin.id }
         appState.updateBottle(updated)
-    }
-}
-
-// MARK: - System tool card
-
-private struct SystemToolCard: View {
-    let name: String
-    let symbol: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: Theme.Spacing.s) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: Theme.Radius.icon, style: .continuous)
-                        .fill(.regularMaterial)
-                    Image(systemName: symbol)
-                        .font(.system(size: 26))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(width: 56, height: 56)
-
-                Text(name)
-                    .font(Theme.headingFont(13))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-            }
-            .padding(Theme.Spacing.m)
-            .overpassCard()
-        }
-        .buttonStyle(.plain)
     }
 }

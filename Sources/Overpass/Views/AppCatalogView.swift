@@ -140,6 +140,22 @@ private struct AppCatalogCard: View {
     @Environment(ThemeStore.self) private var themeStore
     let app: CatalogApp
 
+    /// At most one badge per card, in priority order: an engine
+    /// requirement matters most, then a non-default Windows version, then
+    /// silent-install as a "nice to know" fallback.
+    private var badge: (text: String, systemImage: String, tint: Color)? {
+        if app.preferredEngine == .gptk {
+            return ("GPTK recommended", "bolt.fill", .blue)
+        }
+        if app.recommendedWindows != .win10 {
+            return ("Needs \(app.recommendedWindows.displayName)", "macwindow", .orange)
+        }
+        if app.hasSilentInstall {
+            return ("Silent install", "checkmark.seal", .green)
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
             HStack(alignment: .top, spacing: Theme.Spacing.m) {
@@ -167,20 +183,12 @@ private struct AppCatalogCard: View {
             Text(app.blurb)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            FlowLayout(spacing: 4) {
-                if app.hasSilentInstall {
-                    Chip(text: "Silent install", systemImage: "checkmark.seal", tint: .green)
-                }
-                if app.recommendedWindows != .win10 {
-                    Chip(text: "Needs \(app.recommendedWindows.displayName)", systemImage: "macwindow", tint: .orange)
-                }
-                if app.preferredEngine == .gptk {
-                    Chip(text: "GPTK recommended", systemImage: "bolt.fill", tint: .blue)
-                }
+            if let badge {
+                Chip(text: badge.text, systemImage: badge.systemImage, tint: badge.tint)
             }
         }
         .padding(Theme.Spacing.l)

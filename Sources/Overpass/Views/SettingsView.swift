@@ -3,6 +3,7 @@ import AppKit
 
 /// Theme picker, a shortcut to the data folder, and a short About block.
 struct SettingsView: View {
+    @Environment(AppState.self) private var appState
     @Environment(ThemeStore.self) private var themeStore
 
     private var columns: [GridItem] {
@@ -52,6 +53,14 @@ struct SettingsView: View {
                     Text("Wine engines (Game Porting Toolkit, Wine Staging) run as x86_64 binaries under Rosetta 2. Apple is expected to remove most of Rosetta 2 in macOS 28 — engine selection stays behind an abstraction so a native build can be added later.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    HStack {
+                        Spacer()
+                        Button("Run Setup Wizard Again") {
+                            appState.showSetupWizard = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .padding(Theme.Spacing.l)
                 .overpassCard()

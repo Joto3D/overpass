@@ -13,6 +13,10 @@ import Foundation
 ///    later writers would take SIGPIPE and we would never see EOF — which
 ///    is exactly the "leaked continuation" hang bottle creation hit.
 enum ProcessRunner {
+    /// How long `run` keeps waiting for pipe EOF after the direct child has
+    /// exited before resolving anyway (see `terminationHandler`).
+    static let eofGracePeriod: TimeInterval = 4
+
     struct Result: Sendable {
         let status: Int32
         let stdout: String
@@ -38,11 +42,9 @@ enum ProcessRunner {
         var onFinish: ((Result) -> Void)?
         var onEOF: (() -> Void)?
 
-        func finishIfReady() {
-            guard !didFinish, let status = terminationStatus, !stdoutOpen, !stderrOpen else { return }
+        func finishIfReady(force: Bool = false) {
+            guard !didFinish, let status = terminationStatus, force || (!stdoutOpen && !stderrOpen) else { return }
             didFinish = true
-            try? logHandle?.close()
-            logHandle = nil
             let result = Result(
                 status: status,
                 stdout: String(data: stdoutData, encoding: .utf8) ?? "",
@@ -125,6 +127,17 @@ enum ProcessRunner {
             box.queue.async {
                 box.terminationStatus = finished.terminationStatus
                 box.finishIfReady()
+            }
+            // A long-lived inheritor of the pipes (a persistent `wineserver`,
+            // a game started by `wine start`) can keep them open for minutes
+            // after the child we spawned has exited. `run` callers only care
+            // about the direct child, so give the pipes a short grace period
+            // to deliver trailing output, then resolve with what we have. The
+            // box (and thus the read ends) stays alive until real EOF, so
+            // those inheritors never see SIGPIPE.
+            box.queue.asyncAfter(deadline: .now() + eofGracePeriod) {
+                guard !box.didFinish, box.terminationStatus != nil else { return }
+                box.finishIfReady(force: true)
             }
         }
 

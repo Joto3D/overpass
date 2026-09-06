@@ -19,7 +19,7 @@ enum Theme {
     /// Rounded, prominent — used for screen/section titles so headings
     /// feel like part of Overpass's identity rather than default system
     /// chrome. Body text intentionally stays on the regular system font
-    /// for maximum readability in dense lists (mod names, README text).
+    /// for maximum readability in dense lists (bottle names, log text).
     static func titleFont(_ size: CGFloat = 22, weight: Font.Weight = .bold) -> Font {
         .system(size: size, weight: weight, design: .rounded)
     }
@@ -64,6 +64,11 @@ struct ThemePalette: Identifiable, Hashable, Sendable {
     let id: String
     let displayName: String
 
+    /// A short, one-line description shown alongside `displayName` in
+    /// Settings' Appearance picker (e.g. "Indigo, violet, and dusk-sky
+    /// orange — Overpass's default look").
+    let summary: String
+
     /// The accent gradient's stops, left-to-right. A single-color palette
     /// (see `.plain`) is expressed as a one-element array — a `LinearGradient`
     /// with one stop renders as a plain solid fill, so every consumer below
@@ -72,9 +77,9 @@ struct ThemePalette: Identifiable, Hashable, Sendable {
     let accentColors: [Color]
 
     /// The deep base/surface tone layered at low opacity under card
-    /// materials and icon roundels (Overpass's original "night" blue). Always
-    /// used under a material, never as an opaque fill, so it reads as
-    /// intentional in dark mode while staying subtle in light mode.
+    /// materials and icon roundels. Always used under a material, never as
+    /// an opaque fill, so it reads as intentional in dark mode while
+    /// staying subtle in light mode.
     let surface: Color
 
     /// A single calmer accent that complements the gradient — used where the
@@ -103,86 +108,88 @@ struct ThemePalette: Identifiable, Hashable, Sendable {
 }
 
 extension ThemePalette {
-    /// The original "deep night sky + rainbow bridge" identity (matching
-    /// `Resources/icon.png`) — Overpass's default palette. Every color here
-    /// is byte-identical to the constants this type replaced, so selecting
-    /// "Overpass" reproduces the app's original look exactly.
-    static let bifrost = ThemePalette(
-        id: "bifrost",
-        displayName: "Overpass",
+    /// Overpass's default identity, lifted straight from `Resources/icon.png`:
+    /// a dusk sky over the highway — deep indigo fading through violet into
+    /// sunset orange, over the icon's near-black asphalt navy.
+    static let dusk = ThemePalette(
+        id: "dusk",
+        displayName: "Dusk",
+        summary: "Indigo, violet, and sunset orange — Overpass's default look.",
         accentColors: [
-            Color(red: 0.93, green: 0.32, blue: 0.37),
-            Color(red: 0.95, green: 0.58, blue: 0.28),
-            Color(red: 0.96, green: 0.80, blue: 0.38),
-            Color(red: 0.44, green: 0.78, blue: 0.55),
-            Color(red: 0.38, green: 0.67, blue: 0.92),
-            Color(red: 0.62, green: 0.52, blue: 0.87),
+            Color(red: 0.18, green: 0.13, blue: 0.40),
+            Color(red: 0.36, green: 0.24, blue: 0.60),
+            Color(red: 0.61, green: 0.31, blue: 0.62),
+            Color(red: 0.86, green: 0.42, blue: 0.36),
+            Color(red: 0.95, green: 0.66, blue: 0.29),
         ],
-        surface: Color(red: 0.043, green: 0.055, blue: 0.145),
-        secondaryAccent: Color(red: 0.38, green: 0.67, blue: 0.92),
-        badgeTint: Color(red: 0.62, green: 0.52, blue: 0.87)
+        surface: Color(red: 0.07, green: 0.05, blue: 0.16),
+        secondaryAccent: Color(red: 0.36, green: 0.24, blue: 0.60),
+        badgeTint: Color(red: 0.95, green: 0.66, blue: 0.29)
     )
 
-    /// Meadows and viking gold — deep forest-green surfaces under a
-    /// gold-to-moss accent sweep.
-    static let midgard = ThemePalette(
-        id: "midgard",
-        displayName: "Midgard",
+    /// Near-black neutrals with a single warm amber accent — night driving
+    /// with the dash lights on. The quietest of the dark palettes.
+    static let asphalt = ThemePalette(
+        id: "asphalt",
+        displayName: "Asphalt",
+        summary: "Near-black neutrals with a warm amber accent, like night driving.",
         accentColors: [
-            Color(red: 0.85, green: 0.70, blue: 0.22),
-            Color(red: 0.72, green: 0.66, blue: 0.26),
-            Color(red: 0.56, green: 0.60, blue: 0.30),
-            Color(red: 0.42, green: 0.56, blue: 0.32),
-            Color(red: 0.30, green: 0.48, blue: 0.33),
+            Color(red: 0.54, green: 0.35, blue: 0.12),
+            Color(red: 0.79, green: 0.54, blue: 0.18),
+            Color(red: 0.95, green: 0.77, blue: 0.42),
         ],
-        surface: Color(red: 0.035, green: 0.09, blue: 0.05),
-        secondaryAccent: Color(red: 0.45, green: 0.58, blue: 0.36),
-        badgeTint: Color(red: 0.85, green: 0.70, blue: 0.22)
+        surface: Color(red: 0.05, green: 0.05, blue: 0.06),
+        secondaryAccent: Color(red: 0.79, green: 0.54, blue: 0.18),
+        badgeTint: Color(red: 0.95, green: 0.77, blue: 0.42)
     )
 
-    /// Deep red-to-amber embers over a near-black charcoal surface.
-    static let ashlands = ThemePalette(
-        id: "ashlands",
-        displayName: "Ashlands",
+    /// Electric cyan into magenta over graphite — an arcade-marquee jolt of
+    /// color for people who want the loudest option on the list.
+    static let neon = ThemePalette(
+        id: "neon",
+        displayName: "Neon",
+        summary: "Electric cyan and magenta on graphite, arcade-marquee energy.",
         accentColors: [
-            Color(red: 0.55, green: 0.08, blue: 0.10),
-            Color(red: 0.80, green: 0.22, blue: 0.10),
-            Color(red: 0.93, green: 0.45, blue: 0.12),
-            Color(red: 0.96, green: 0.68, blue: 0.25),
+            Color(red: 0.12, green: 0.91, blue: 0.91),
+            Color(red: 0.48, green: 0.36, blue: 0.98),
+            Color(red: 0.95, green: 0.21, blue: 0.69),
         ],
-        surface: Color(red: 0.06, green: 0.035, blue: 0.03),
-        secondaryAccent: Color(red: 0.82, green: 0.36, blue: 0.15),
-        badgeTint: Color(red: 0.96, green: 0.68, blue: 0.25)
+        surface: Color(red: 0.04, green: 0.05, blue: 0.07),
+        secondaryAccent: Color(red: 0.12, green: 0.91, blue: 0.91),
+        badgeTint: Color(red: 0.95, green: 0.21, blue: 0.69)
     )
 
-    /// Dusky indigo surfaces under a teal-to-violet mist accent.
-    static let mistlands = ThemePalette(
-        id: "mistlands",
-        displayName: "Mistlands",
+    /// Deep teal and steel blue over a near-black harbor navy, finished with
+    /// a pale sand accent — calmer and cooler than Dusk.
+    static let harbor = ThemePalette(
+        id: "harbor",
+        displayName: "Harbor",
+        summary: "Deep teal and steel blue with a pale sand accent.",
         accentColors: [
-            Color(red: 0.20, green: 0.55, blue: 0.55),
-            Color(red: 0.30, green: 0.50, blue: 0.63),
-            Color(red: 0.45, green: 0.46, blue: 0.71),
-            Color(red: 0.58, green: 0.42, blue: 0.75),
+            Color(red: 0.08, green: 0.33, blue: 0.35),
+            Color(red: 0.20, green: 0.45, blue: 0.56),
+            Color(red: 0.85, green: 0.78, blue: 0.63),
         ],
-        surface: Color(red: 0.09, green: 0.07, blue: 0.16),
-        secondaryAccent: Color(red: 0.42, green: 0.48, blue: 0.68),
-        badgeTint: Color(red: 0.56, green: 0.44, blue: 0.73)
+        surface: Color(red: 0.024, green: 0.10, blue: 0.115),
+        secondaryAccent: Color(red: 0.20, green: 0.45, blue: 0.56),
+        badgeTint: Color(red: 0.85, green: 0.78, blue: 0.63)
     )
 
-    /// Steel-blue ice surfaces under a white-to-pale-blue accent.
-    static let deepNorth = ThemePalette(
-        id: "deep-north",
-        displayName: "Deep North",
+    /// Overpass's one light palette: a warm cream ground under a
+    /// coral-to-amber accent, tuned so white button/chip text still reads
+    /// clearly against it. Everything else on this list stays dark.
+    static let sunrise = ThemePalette(
+        id: "sunrise",
+        displayName: "Sunrise",
+        summary: "Light and warm — coral and amber over a soft cream ground.",
         accentColors: [
-            Color(red: 0.85, green: 0.93, blue: 0.97),
-            Color(red: 0.55, green: 0.82, blue: 0.93),
-            Color(red: 0.35, green: 0.62, blue: 0.85),
-            Color(red: 0.55, green: 0.70, blue: 0.88),
+            Color(red: 0.83, green: 0.33, blue: 0.29),
+            Color(red: 0.88, green: 0.55, blue: 0.20),
+            Color(red: 0.90, green: 0.68, blue: 0.30),
         ],
-        surface: Color(red: 0.07, green: 0.10, blue: 0.15),
-        secondaryAccent: Color(red: 0.45, green: 0.70, blue: 0.88),
-        badgeTint: Color(red: 0.55, green: 0.82, blue: 0.93)
+        surface: Color(red: 0.95, green: 0.89, blue: 0.80),
+        secondaryAccent: Color(red: 0.83, green: 0.33, blue: 0.29),
+        badgeTint: Color(red: 0.88, green: 0.55, blue: 0.20)
     )
 
     /// Minimal: the system accent color standing in for the gradient (a
@@ -191,6 +198,7 @@ extension ThemePalette {
     static let plain = ThemePalette(
         id: "plain",
         displayName: "Plain",
+        summary: "System colors only — no signature gradient.",
         accentColors: [Color.accentColor],
         surface: Color(white: 0.08),
         secondaryAccent: Color.secondary,
@@ -198,8 +206,8 @@ extension ThemePalette {
     )
 
     /// Every selectable palette, in the order shown by Settings' theme
-    /// picker. `.bifrost` stays first as the default.
-    static let all: [ThemePalette] = [.bifrost, .midgard, .ashlands, .mistlands, .deepNorth, .plain]
+    /// picker. `.dusk` stays first as the default.
+    static let all: [ThemePalette] = [.dusk, .asphalt, .neon, .harbor, .sunrise, .plain]
 }
 
 // MARK: - Theme store
@@ -229,7 +237,7 @@ final class ThemeStore {
 
     init() {
         let storedID = UserDefaults.standard.string(forKey: Self.storageKey)
-        current = ThemePalette.all.first { $0.id == storedID } ?? .bifrost
+        current = ThemePalette.all.first { $0.id == storedID } ?? .dusk
     }
 }
 
@@ -388,7 +396,11 @@ struct StatusPillCard: View {
 
 /// Overpass's primary action style: a full-width accent-gradient fill with
 /// bold rounded text — reserved for the single most important action on a
-/// screen (Play Modded, Install, primary wizard actions).
+/// screen (Play, Install, primary wizard actions).
+///
+/// Named `AuroraButtonStyle` for source compatibility with call sites that
+/// spell it `.buttonStyle(.aurora)`; `AccentButtonStyle` below is the
+/// Overpass-flavored alias for any new code.
 struct AuroraButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(ThemeStore.self) private var themeStore
@@ -414,9 +426,18 @@ extension ButtonStyle where Self == AuroraButtonStyle {
     static var aurora: AuroraButtonStyle { AuroraButtonStyle() }
 }
 
+/// Overpass-flavored alias for `AuroraButtonStyle` — prefer this name (and
+/// `.buttonStyle(.accent)`) in new code; `AuroraButtonStyle`/`.aurora` stick
+/// around only because existing call sites already spell it that way.
+typealias AccentButtonStyle = AuroraButtonStyle
+
+extension ButtonStyle where Self == AccentButtonStyle {
+    static var accent: AccentButtonStyle { AccentButtonStyle() }
+}
+
 /// A quiet secondary action style: plain text, no chrome beyond a faint
 /// hover-independent background, for actions that should sit beside a
-/// primary aurora button without competing with it (Play Vanilla).
+/// primary accent button without competing with it (Play Vanilla).
 struct QuietButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
