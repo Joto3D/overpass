@@ -173,20 +173,30 @@ struct ImportBottleSheet: View {
     // MARK: - Form
 
     private var form: some View {
-        Form {
-            TextField("Name", text: $name)
-            Picker("Engine", selection: $engineID) {
-                ForEach(appState.installedEngines) { engine in
-                    Text(engine.displayName).tag(engine.id)
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            Form {
+                TextField("Name", text: $name)
+                Picker("Engine", selection: $engineID) {
+                    ForEach(appState.installedEngines) { engine in
+                        Text(engine.displayName).tag(engine.id)
+                    }
+                }
+                Picker("Windows Version", selection: $windowsVersion) {
+                    ForEach(WindowsVersion.allCases) { version in
+                        Text(version.displayName).tag(version)
+                    }
                 }
             }
-            Picker("Windows Version", selection: $windowsVersion) {
-                ForEach(WindowsVersion.allCases) { version in
-                    Text(version.displayName).tag(version)
-                }
+            .formStyle(.grouped)
+
+            if let kind = appState.installedEngines.first(where: { $0.id == engineID })?.kind {
+                Text(engineTradeoffCaption(for: kind))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Theme.Spacing.s)
             }
         }
-        .formStyle(.grouped)
     }
 
     private var progressBlock: some View {

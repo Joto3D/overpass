@@ -10,6 +10,7 @@ struct LogViewerView: View {
     @State private var logFiles: [URL] = []
     @State private var selected: URL?
     @State private var content: String = ""
+    @State private var showTroubleshooting = false
 
     private var isBottleRunning: Bool {
         appState.runs.contains { $0.bottleID == bottleID && $0.isRunning }
@@ -44,6 +45,13 @@ struct LogViewerView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
+                    Button("Program won't start?") { showTroubleshooting = true }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .popover(isPresented: $showTroubleshooting) {
+                            troubleshootingContent
+                        }
                     Button("Copy Log") { copyLog() }
                         .buttonStyle(.quiet)
                         .fixedSize()
@@ -86,6 +94,39 @@ struct LogViewerView: View {
                 guard !Task.isCancelled else { return }
                 refresh()
             }
+        }
+    }
+
+    /// The troubleshooting the app's owner has actually needed, collected
+    /// in one place next to the tab where the evidence (the log) lives —
+    /// rather than as a wall of text nobody reads until something breaks.
+    private var troubleshootingContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            troubleshootingItem(
+                "Black or invisible window",
+                "Try a virtual desktop (⋯ menu → winecfg → Graphics), turn DXVK off (Extras tab), or switch engines (Engines screen)."
+            )
+            troubleshootingItem(
+                "Program won't start at all",
+                "Check the log on the left for the last error line — it usually names the missing DLL or the crash."
+            )
+            troubleshootingItem(
+                "Fonts or installers failing",
+                "Several Winetricks verbs and installers need cabextract. If it's missing, run in Terminal: brew install cabextract"
+            )
+        }
+        .frame(width: 300, alignment: .leading)
+        .padding(Theme.Spacing.m)
+    }
+
+    private func troubleshootingItem(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+            Text(body)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

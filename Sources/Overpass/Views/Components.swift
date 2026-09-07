@@ -20,6 +20,33 @@ func engineShortName(_ engine: InstalledEngine?) -> String {
     }
 }
 
+// MARK: - Engine trade-off captions
+
+/// The single most consequential choice in the app, stated the same way
+/// everywhere it's made: the Engines screen, the New Bottle and Import
+/// Bottle sheets, and the setup wizard. Two variants —
+/// `engineTradeoffCaption` is a self-contained one-liner for a picker that
+/// has no other description nearby; `engineCaveat` is just the "what can go
+/// wrong" half, for the Engines screen where `EngineRelease.notes` already
+/// covers what the engine *is*.
+func engineTradeoffCaption(for kind: EngineKind) -> String {
+    switch kind {
+    case .gptk:
+        return "Apple's DirectX-to-Metal translation, best for games — but based on an older Wine, so some modern apps, including the Steam client, can fail to run."
+    case .wineStaging:
+        return "Current Wine, better app compatibility — DirectX goes through DXVK, which is usually slower for games."
+    }
+}
+
+func engineCaveat(for kind: EngineKind) -> String {
+    switch kind {
+    case .gptk:
+        return "Based on an older Wine, so some modern apps — including the Steam client — can fail to run."
+    case .wineStaging:
+        return "DirectX goes through DXVK instead of D3DMetal, which is usually slower for games."
+    }
+}
+
 // MARK: - Path formatting
 
 /// `pin.exePath` relative to the bottle's `drive_c`, for a quieter
@@ -75,15 +102,37 @@ struct BottleSidebarRow: View {
 /// tracked, secondary style (see `SectionHeader`) but without its accent
 /// underline — a sidebar section title should stay quiet, not compete with
 /// the one accent already reserved for a bottle's "Run .exe…" button.
+///
+/// An optional `info` string adds a small info glyph with a `.help(_:)`
+/// hover tooltip after the title — used exactly once, on "Bottles", to
+/// teach the one piece of jargon this app can't avoid without repeating
+/// the explanation on every screen that happens to say the word.
+///
+/// Deliberately a static `Image` with `.help(_:)` rather than
+/// `InfoPopoverButton`'s `Button` + `@State` + `.popover(_:)`: a stateful,
+/// interactive subview inside a `List` `Section` header confuses the
+/// sidebar's row virtualization on this SwiftUI/AppKit combination — the
+/// "Bottles" section's rows stop rendering the moment selection moves to
+/// another section and don't come back. A plain hover tooltip carries the
+/// same information without touching List internals.
 struct SidebarSectionHeader: View {
     let title: String
+    var info: String? = nil
 
     var body: some View {
-        Text(title)
-            .font(Theme.headingFont(11))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .tracking(0.6)
+        HStack(spacing: 3) {
+            Text(title)
+                .font(Theme.headingFont(11))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.6)
+            if let info {
+                Image(systemName: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .help(info)
+            }
+        }
     }
 }
 

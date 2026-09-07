@@ -58,6 +58,14 @@ struct CatalogApp: Identifiable, Hashable, Sendable {
     let launchArgs: String
     let keywords: [String]
     let iconSymbol: String
+    /// An additional, app-specific fix (registry keys, winetricks verbs,
+    /// forced Windows version, launch args) applied by `AppInstaller`
+    /// right after this app installs. `nil` for the vast majority of
+    /// entries — only set this when there's a documented, specific
+    /// workaround for this app; see `AppTweak`'s doc comment before
+    /// adding one, and be honest in `postInstallNotes` about whether it
+    /// was actually verified to work.
+    let tweak: AppTweak?
 
     init(
         id: String,
@@ -76,7 +84,8 @@ struct CatalogApp: Identifiable, Hashable, Sendable {
         launchExeHints: [String] = [],
         launchArgs: String = "",
         keywords: [String] = [],
-        iconSymbol: String = "app.badge"
+        iconSymbol: String = "app.badge",
+        tweak: AppTweak? = nil
     ) {
         self.id = id
         self.name = name
@@ -95,6 +104,7 @@ struct CatalogApp: Identifiable, Hashable, Sendable {
         self.launchArgs = launchArgs
         self.keywords = keywords
         self.iconSymbol = iconSymbol
+        self.tweak = tweak
     }
 
     /// True when the installer has a known non-interactive mode. Shown as
@@ -126,12 +136,13 @@ enum AppCatalog {
             installerFileName: "SteamSetup.exe",
             silentArgs: ["/S"],
             recommendedWindows: .win10,
-            preferredEngine: .wineStaging,  // GPTK 3.0-3 is Wine 7.7-based; current steamwebhelper (Chromium 126) hangs there but works on Wine 11
-            postInstallNotes: "Launch flags \"-allosarches -cef-disable-gpu -cef-disable-gpu-compositing\" are applied automatically (the GPU flags reduce steamwebhelper crashes). Important: on the Game Porting Toolkit engine (Wine 7.7 base) the current Steam client shows \"steamwebhelper is not responding\" no matter what flags are used; run the Steam bottle on the Wine Staging 11.16 engine instead (Config → Engine) and enable DXVK in Extras for DirectX games — they work around steamwebhelper (Steam's embedded Chromium browser) crashing on launch under Apple Silicon GPTK/Wine, a fix documented by CrossOver support and mirrored on mybyways.com's \"Running Steam in Game Porting Toolkit\" (Sept 2026). If the login screen itself renders blank, add \"-noreactlogin\" (Valve's older non-React login UI) as a fallback — note that Valve has periodically threatened to remove that flag from Steam, so it may stop working in a future Steam update.",
+            preferredEngine: .wineStaging,  // GPTK 3.0-3 is Wine 7.7-based; current steamwebhelper (Chromium 126) hangs there. It also crashes on Wine Staging 11.16 — see the note below.
+            postInstallNotes: "Steam's embedded Chromium browser (steamwebhelper) is currently broken on both engines: it hangs (\"steamwebhelper is not responding\") on Game Porting Toolkit's Wine 7.7 base, and outright crashes (\"steamwebhelper.exe has encountered a serious problem\") on Wine Staging 11.16. Overpass automatically installs Core Fonts and MSXML 3.0 and sets HKCU\\Software\\Valve\\Steam\\DWriteEnable=0 after Steam installs — the same fix CrossOver ships for its own Steam bottle profile — but this was verified by hand against Wine Staging 11.16 (2026-09-07) and the crash persisted through that recipe plus every documented fallback (GPUAccelWebViews=0, a per-exe Windows-7 compatibility override, LargeAddressAware, and switching the whole bottle to Windows 7 — the last of these made it worse, crash-looping an older CEF build). These steps are still applied because they're cheap and harmless even when they don't help, and may matter for other Steam builds or engine combinations. There is currently no known way to make Steam's UI reliably work in Overpass; \"-allosarches -cef-disable-gpu -cef-disable-gpu-compositing\" are applied as launch flags regardless since they're harmless and occasionally reported to help. If the login screen renders blank, \"-noreactlogin\" (Valve's older non-React login UI) is worth trying by hand, though Valve has periodically threatened to remove that flag.",
             launchExeHints: ["Program Files (x86)/Steam/steam.exe"],
             launchArgs: "-allosarches -cef-disable-gpu -cef-disable-gpu-compositing",
             keywords: ["valve", "games", "store"],
-            iconSymbol: "gamecontroller.fill"
+            iconSymbol: "gamecontroller.fill",
+            tweak: AppTweaks.steam
         ),
         CatalogApp(
             id: "battlenet",

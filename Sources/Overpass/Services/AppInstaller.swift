@@ -144,6 +144,22 @@ enum AppInstaller {
                 await waitForInstallerToSettle(bottle: bottle)
             }
 
+            if let tweak = app.tweak {
+                state.set(phase: "Applying \(app.name) fixes…", progress: nil)
+                do {
+                    try await AppTweak.apply(tweak, to: bottle, engine: engine) { line in
+                        Task { @MainActor in state.log(line) }
+                    }
+                } catch {
+                    // A tweak failing shouldn't fail the whole install —
+                    // the app itself is already installed at this point;
+                    // just surface it in the log and move on to the
+                    // rescan below.
+                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    state.log("Warning: \(app.name) fix-up failed: \(message)")
+                }
+            }
+
             state.set(phase: "Scanning installed programs…", progress: nil)
             bottle = await rescanAndPin(app, bottle: bottle)
             persist(bottle)

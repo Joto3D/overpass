@@ -30,8 +30,6 @@ struct EnginesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                header
-
                 VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                     SectionHeader(title: "Available Engines", systemImage: "gearshape.2")
                     VStack(spacing: Theme.Spacing.l) {
@@ -95,16 +93,6 @@ struct EnginesView: View {
             } catch {
                 updateCheckError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            Text("Engines")
-                .font(Theme.titleFont())
-            Text("Wine builds that run your Windows programs. Install at least one before creating a bottle.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -180,6 +168,10 @@ private struct EngineRow: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    Text(engineCaveat(for: release.kind))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: Theme.Spacing.m)
                 if installed != nil, !installing {
@@ -238,13 +230,18 @@ private struct EngineRow: View {
                 Button("Remove", role: .destructive) {
                     Task { await appState.removeEngine(installed.id) }
                 }
-                .buttonStyle(.quiet)
+                .buttonStyle(.bordered)
             }
         } else {
-            Button("Install") {
-                Task { await appState.installEngine(release) }
+            VStack(alignment: .leading, spacing: 4) {
+                Button("Install") {
+                    Task { await appState.installEngine(release) }
+                }
+                .buttonStyle(.bordered)
+                Text("Downloads and unpacks in the background — usually a few minutes, depending on your connection.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.bordered)
         }
     }
 

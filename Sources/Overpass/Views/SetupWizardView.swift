@@ -31,6 +31,8 @@ struct SetupWizardView: View {
                     .foregroundStyle(.secondary)
             }
 
+            orientationCard
+
             VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                 rosettaStep
                 engineStep
@@ -51,6 +53,24 @@ struct SetupWizardView: View {
         }
         .padding(Theme.Spacing.xl)
         .frame(width: 460)
+    }
+
+    /// Three short lines of plain-language orientation, shown once, before
+    /// the checklist below — the only place in the app that walks a
+    /// newcomer through what's about to happen rather than assuming they
+    /// already know what a "bottle" or an "engine" is.
+    private var orientationCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("A **bottle** is a private Windows environment — its own C: drive, installed programs, and engine.")
+            Text("An **engine** is the Wine build a bottle runs on. Game Porting Toolkit (below) is the best default for games; Wine Staging trades some game performance for wider app compatibility — switch anytime from Engines.")
+            Text("Once you have both, use **Install App** for common software or **Run .exe…** for your own installers.")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(Theme.Spacing.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overpassCard(cornerRadius: Theme.Radius.row)
     }
 
     @ViewBuilder

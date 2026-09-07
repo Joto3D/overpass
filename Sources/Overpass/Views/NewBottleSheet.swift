@@ -16,6 +16,10 @@ struct NewBottleSheet: View {
         !isCreating && !engineID.isEmpty && !name.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    private var selectedEngineKind: EngineKind? {
+        appState.installedEngines.first { $0.id == engineID }?.kind
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
             Text("New Bottle")
@@ -47,6 +51,14 @@ struct NewBottleSheet: View {
                     }
                 }
                 .formStyle(.grouped)
+
+                if let selectedEngineKind {
+                    Text(engineTradeoffCaption(for: selectedEngineKind))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, Theme.Spacing.s)
+                }
 
                 if isCreating {
                     HStack(spacing: Theme.Spacing.s) {

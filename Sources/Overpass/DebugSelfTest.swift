@@ -38,6 +38,10 @@ enum DebugSelfTest {
         testProgramScannerFallbackNeverEmpty()
         testWineRunnerEnvironment(root: root)
         testWineRunnerSplitArguments()
+        testVirtualDesktopSizeValidation()
+        testVirtualDesktopNameSanitization()
+        testVirtualDesktopWindowsPathConversion(root: root)
+        testVirtualDesktopLaunchArguments(root: root)
         testD3DMetalOverlay(root: root)
         testPerformanceSettings(root: root)
         testAppCatalog()
@@ -636,6 +640,200 @@ enum DebugSelfTest {
         // still flushed at end-of-string.
         let unbalanced = WineRunner.splitArguments(#"a "b"#)
         check("splitArguments handles an unbalanced quote without crashing", unbalanced == ["a", "b"], "got \(unbalanced)")
+    }
+
+    // MARK: - Virtual desktop: Bottle.validatedVirtualDesktopSize
+
+    private static func testVirtualDesktopSizeValidation() {
+        check(
+            "validatedVirtualDesktopSize accepts a well-formed size",
+            Bottle.validatedVirtualDesktopSize("1920x1080") == "1920x1080"
+        )
+        check(
+            "validatedVirtualDesktopSize accepts the minimum bound",
+            Bottle.validatedVirtualDesktopSize("640x480") == "640x480"
+        )
+        check(
+            "validatedVirtualDesktopSize accepts the maximum bound",
+            Bottle.validatedVirtualDesktopSize("7680x4320") == "7680x4320"
+        )
+        check(
+            "validatedVirtualDesktopSize falls back to the default for nil",
+            Bottle.validatedVirtualDesktopSize(nil) == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for width below the minimum",
+            Bottle.validatedVirtualDesktopSize("639x480") == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for height above the maximum",
+            Bottle.validatedVirtualDesktopSize("1920x4321") == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for non-numeric parts",
+            Bottle.validatedVirtualDesktopSize("wideXtall") == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for a missing 'x'",
+            Bottle.validatedVirtualDesktopSize("1920,1080") == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for a malformed extra segment",
+            Bottle.validatedVirtualDesktopSize("1920x1080x60") == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for an empty string",
+            Bottle.validatedVirtualDesktopSize("") == Bottle.defaultVirtualDesktopSize
+        )
+        check(
+            "validatedVirtualDesktopSize falls back for negative numbers",
+            Bottle.validatedVirtualDesktopSize("-100x-100") == Bottle.defaultVirtualDesktopSize
+        )
+        check("Bottle() defaults virtualDesktop to false", Bottle(name: "vd-default", engineID: "gptk-3.0-3").virtualDesktop == false)
+        check(
+            "Bottle() defaults virtualDesktopSize to 1280x800",
+            Bottle(name: "vd-default", engineID: "gptk-3.0-3").virtualDesktopSize == "1280x800"
+        )
+    }
+
+    // MARK: - Virtual desktop: WineRunner.sanitizedDesktopName
+
+    private static func testVirtualDesktopNameSanitization() {
+        check(
+            "sanitizedDesktopName strips spaces",
+            WineRunner.sanitizedDesktopName("My Bottle") == "MyBottle"
+        )
+        check(
+            "sanitizedDesktopName strips commas",
+            WineRunner.sanitizedDesktopName("Steam, Deluxe") == "SteamDeluxe"
+        )
+        check(
+            "sanitizedDesktopName strips unicode/accented characters",
+            WineRunner.sanitizedDesktopName("Café \u{1F600} \u{6E38}\u{620F}") == "Caf"
+        )
+        check(
+            "sanitizedDesktopName keeps letters, digits, underscore, and hyphen",
+            WineRunner.sanitizedDesktopName("Default_Bottle-2") == "Default_Bottle-2"
+        )
+        check(
+            "sanitizedDesktopName falls back to Overpass when nothing survives",
+            WineRunner.sanitizedDesktopName("\u{1F600}\u{1F600}, ,") == "Overpass"
+        )
+        check(
+            "sanitizedDesktopName falls back to Overpass for an empty name",
+            WineRunner.sanitizedDesktopName("") == "Overpass"
+        )
+    }
+
+    // MARK: - Virtual desktop: WineRunner.windowsPath(forUnixPath:bottle:)
+
+    private static func testVirtualDesktopWindowsPathConversion(root: URL) {
+        let bottle = Bottle(name: "vd-path-test", engineID: "gptk-3.0-3")
+
+        let inside = bottle.driveC.appendingPathComponent("Program Files/Notepad++/notepad++.exe").path
+        check(
+            "windowsPath converts a drive_c path to a backslash C: path",
+            WineRunner.windowsPath(forUnixPath: inside, bottle: bottle) == #"C:\Program Files\Notepad++\notepad++.exe"#,
+            "got \(WineRunner.windowsPath(forUnixPath: inside, bottle: bottle) ?? "nil")"
+        )
+
+        let root2 = bottle.driveC.path
+        check(
+            "windowsPath returns nil for drive_c itself (no relative file)",
+            WineRunner.windowsPath(forUnixPath: root2, bottle: bottle) == nil
+        )
+
+        let outside = root.appendingPathComponent("Elsewhere/Geeky.exe").path
+        check(
+            "windowsPath returns nil for a path outside drive_c",
+            WineRunner.windowsPath(forUnixPath: outside, bottle: bottle) == nil
+        )
+
+        let anotherBottleInside = Bottle(name: "other", engineID: "gptk-3.0-3").driveC
+            .appendingPathComponent("Program Files/Foo/foo.exe").path
+        check(
+            "windowsPath returns nil for a path under a different bottle's drive_c",
+            WineRunner.windowsPath(forUnixPath: anotherBottleInside, bottle: bottle) == nil
+        )
+    }
+
+    // MARK: - Virtual desktop: WineRunner.launchArguments
+
+    private static func testVirtualDesktopLaunchArguments(root: URL) {
+        var bottle = Bottle(name: "Default", engineID: "gptk-3.0-3")
+        let exeInside = bottle.driveC.appendingPathComponent("Program Files/Notepad++/notepad++.exe")
+
+        // Virtual desktop off -> plain `start /unix`, unchanged from before
+        // this feature existed.
+        bottle.virtualDesktop = false
+        let offResult = WineRunner.launchArguments(exe: exeInside, args: "-x", bottle: bottle)
+        check(
+            "launchArguments: virtual desktop off uses start /unix",
+            offResult.arguments == ["start", "/unix", exeInside.path, "-x"],
+            "got \(offResult.arguments)"
+        )
+        check("launchArguments: virtual desktop off reports no skip reason", offResult.skippedVirtualDesktopReason == nil)
+
+        // Virtual desktop on, exe inside drive_c -> explorer /desktop=...
+        bottle.virtualDesktop = true
+        bottle.virtualDesktopSize = "1920x1080"
+        let onResult = WineRunner.launchArguments(exe: exeInside, args: "-x \"a b\"", bottle: bottle)
+        check(
+            "launchArguments: virtual desktop on builds the exact explorer /desktop= vector",
+            onResult.arguments == [
+                "explorer", "/desktop=Default,1920x1080", #"C:\Program Files\Notepad++\notepad++.exe"#, "-x", "a b",
+            ],
+            "got \(onResult.arguments)"
+        )
+        check("launchArguments: successful virtual desktop reports no skip reason", onResult.skippedVirtualDesktopReason == nil)
+
+        // Virtual desktop on, malformed size -> falls back to the default
+        // size inside the explorer argument.
+        bottle.virtualDesktopSize = "not-a-size"
+        let malformedSizeResult = WineRunner.launchArguments(exe: exeInside, args: "", bottle: bottle)
+        check(
+            "launchArguments: malformed virtualDesktopSize falls back to 1280x800 in the built argument",
+            malformedSizeResult.arguments.first(where: { $0.hasPrefix("/desktop=") }) == "/desktop=Default,1280x800",
+            "got \(malformedSizeResult.arguments)"
+        )
+        bottle.virtualDesktopSize = "1920x1080"
+
+        // Virtual desktop on, exe OUTSIDE drive_c -> declines the virtual
+        // desktop, falls back to start /unix, and explains why.
+        let exeOutside = root.appendingPathComponent("Elsewhere/Geeky.exe")
+        let outsideResult = WineRunner.launchArguments(exe: exeOutside, args: "", bottle: bottle)
+        check(
+            "launchArguments: exe outside drive_c falls back to start /unix even with virtual desktop on",
+            outsideResult.arguments == ["start", "/unix", exeOutside.path],
+            "got \(outsideResult.arguments)"
+        )
+        check(
+            "launchArguments: exe outside drive_c reports a skip reason mentioning drive_c",
+            outsideResult.skippedVirtualDesktopReason?.contains("drive_c") == true,
+            "got \(outsideResult.skippedVirtualDesktopReason ?? "nil")"
+        )
+
+        // .msi always goes through msiexec, virtual desktop or not.
+        let msiInside = bottle.driveC.appendingPathComponent("Program Files/Foo/installer.msi")
+        let msiResult = WineRunner.launchArguments(exe: msiInside, args: "/qn", bottle: bottle)
+        check(
+            "launchArguments: .msi always uses msiexec /i, ignoring virtualDesktop",
+            msiResult.arguments == ["msiexec", "/i", msiInside.path, "/qn"],
+            "got \(msiResult.arguments)"
+        )
+        check("launchArguments: .msi reports no skip reason", msiResult.skippedVirtualDesktopReason == nil)
+
+        // A bottle name with characters wine's /desktop= argument can't
+        // carry (spaces, commas) is sanitized in the built argument too.
+        var punctuatedBottle = Bottle(name: "My Bottle, 2", engineID: "gptk-3.0-3")
+        punctuatedBottle.virtualDesktop = true
+        let punctuatedExe = punctuatedBottle.driveC.appendingPathComponent("Program Files/Foo/foo.exe")
+        let punctuatedResult = WineRunner.launchArguments(exe: punctuatedExe, args: "", bottle: punctuatedBottle)
+        check(
+            "launchArguments: a bottle name with spaces/commas is sanitized in /desktop=",
+            punctuatedResult.arguments.first(where: { $0.hasPrefix("/desktop=") }) == "/desktop=MyBottle2,1280x800",
+            "got \(punctuatedResult.arguments)"
+        )
     }
 
     // MARK: - D3DMetalOverlay

@@ -113,9 +113,12 @@ struct ProgramsGridView: View {
 
             Menu {
                 Toggle("Show all programs", isOn: $showAllPrograms)
+                    .help("Skip the curated list below and show everything Overpass found, including entries normally hidden.")
                 Divider()
                 Toggle("Show system programs", isOn: $showSystem)
+                    .help("Windows components like Control Panel and Registry Editor, not something you'd normally launch.")
                 Toggle("Show helper executables", isOn: $showHelpers)
+                    .help("Background/updater executables bundled with an app, not the app itself.")
             } label: {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .frame(width: Theme.Metrics.toolbarControl, height: Theme.Metrics.toolbarControl)

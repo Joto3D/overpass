@@ -23,8 +23,6 @@ struct AppCatalogView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                header
-
                 if appState.installedEngines.isEmpty {
                     noEngineNotice
                 }
@@ -56,16 +54,6 @@ struct AppCatalogView: View {
         }
         .sheet(item: $selectedApp) { app in
             AppCatalogDetailSheet(app: app)
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            Text("Install App")
-                .font(Theme.titleFont())
-            Text("Search for a Windows app and Overpass will download its installer and run it in a bottle, CrossOver-style.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -144,16 +132,18 @@ private struct AppCatalogCard: View {
 
     /// At most one badge per card, in priority order: an engine
     /// requirement matters most, then a non-default Windows version, then
-    /// silent-install as a "nice to know" fallback.
-    private var badge: (text: String, systemImage: String, tint: Color)? {
+    /// silent-install as a "nice to know" fallback. Each carries a `help`
+    /// tooltip so the badge's short label isn't the only explanation a
+    /// newcomer gets of what it means.
+    private var badge: (text: String, systemImage: String, tint: Color, help: String)? {
         if app.preferredEngine == .gptk {
-            return ("GPTK recommended", "bolt.fill", .blue)
+            return ("GPTK recommended", "bolt.fill", .blue, "Works best with the Game Porting Toolkit engine — installing into a Wine Staging bottle may run worse or not at all.")
         }
         if app.recommendedWindows != .win10 {
-            return ("Needs \(app.recommendedWindows.displayName)", "macwindow", .orange)
+            return ("Needs \(app.recommendedWindows.displayName)", "macwindow", .orange, "This installer expects a bottle set to \(app.recommendedWindows.displayName).")
         }
         if app.hasSilentInstall {
-            return ("Silent install", "checkmark.seal", .green)
+            return ("Silent install", "checkmark.seal", .green, "Overpass runs this installer with its unattended flags — no dialogs to click through.")
         }
         return nil
     }
@@ -197,6 +187,7 @@ private struct AppCatalogCard: View {
 
             if let badge {
                 Chip(text: badge.text, systemImage: badge.systemImage, tint: badge.tint)
+                    .help(badge.help)
             }
         }
         .padding(Theme.Spacing.l)
@@ -279,6 +270,7 @@ private struct AppCatalogDetailSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             if app.installerURL == nil {
                 Chip(text: "Installed via winetricks only", systemImage: "shippingbox", tint: .secondary)
+                    .help("No separate download — this runs entirely through Winetricks, the same verb installer as the Extras tab.")
             }
         }
     }

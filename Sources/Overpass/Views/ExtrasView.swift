@@ -21,8 +21,6 @@ struct ExtrasView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                header
-
                 if let bottle, let engine {
                     dxvkSection(bottle: bottle, engine: engine)
                     // The D3DMetal overlay section is intentionally not shown:
@@ -44,16 +42,6 @@ struct ExtrasView: View {
             .padding(Theme.Spacing.xl)
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            Text("Extras")
-                .font(Theme.titleFont())
-            Text("Optional runtime pieces some Windows programs expect: DXVK for better DirectX support, and Winetricks for redistributables, fonts, and other dependencies.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
         }
     }
 

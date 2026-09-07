@@ -153,14 +153,31 @@ enum WineRunner {
     /// running `Process` immediately; the caller watches `isRunning`/exit
     /// via `Process.waitUntilExit()` on a background task, never on the
     /// main actor.
+    ///
+    /// When `bottle.virtualDesktop` is on, this runs the exe through
+    /// `explorer /desktop=<name>,<WxH>` instead of `start /unix` — the
+    /// standard Whisky/CrossOver fix for windows that render black or
+    /// never appear, since Wine then draws everything into one real macOS
+    /// window instead of handing individual windows to the Mac driver.
+    /// Verified by hand: `wine explorer /desktop=Steam,1280x800
+    /// "C:\Program Files (x86)\Steam\steam.exe"` produced a proper visible
+    /// window where a plain launch had rendered black.
+    ///
+    /// Two cases still go through `start /unix` even with the toggle on,
+    /// because `explorer /desktop` takes a Windows path and there either
+    /// isn't a sane one or the target isn't a program at all:
+    /// - `.msi` installers always go through `msiexec`, virtual desktop or
+    ///   not.
+    /// - an exe living outside `bottle.driveC` (Overpass can run exes from
+    ///   anywhere on the Mac) has no `C:\...` path to give `explorer`; a
+    ///   line explaining why is appended to `logURL` and the launch falls
+    ///   back to `start /unix` rather than failing.
     static func launch(exe: URL, args: String, bottle: Bottle, engine: InstalledEngine, logURL: URL) throws -> Process {
-        let parsedArgs = splitArguments(args)
-        let arguments: [String]
-        if exe.pathExtension.lowercased() == "msi" {
-            arguments = ["msiexec", "/i", exe.path] + parsedArgs
-        } else {
-            arguments = ["start", "/unix", exe.path] + parsedArgs
+        let (arguments, skippedReason) = launchArguments(exe: exe, args: args, bottle: bottle)
+        if let skippedReason {
+            appendLogLine(skippedReason, to: logURL)
         }
+
         return try spawnStreaming(
             executable: engine.wineBinary,
             arguments: arguments,
@@ -168,6 +185,91 @@ enum WineRunner {
             currentDirectory: exe.deletingLastPathComponent(),
             logURL: logURL
         )
+    }
+
+    // MARK: - Virtual desktop helpers
+
+    /// Pure argument-vector builder behind `launch`, split out so it can be
+    /// asserted on directly (no process spawn, no log side effect) — see
+    /// `DebugSelfTest.testVirtualDesktopLaunchArguments`. Mirrors `launch`'s
+    /// doc comment exactly: `.msi` always goes through `msiexec`; a virtual
+    /// desktop is used when requested and the exe resolves to a Windows
+    /// path under `bottle.driveC`; otherwise it falls back to
+    /// `start /unix`, and `skippedVirtualDesktopReason` carries the
+    /// one-line explanation when that fallback happened only because a
+    /// requested virtual desktop couldn't be used (nil in every other
+    /// case, including virtual desktop off and `.msi`).
+    static func launchArguments(
+        exe: URL, args: String, bottle: Bottle
+    ) -> (arguments: [String], skippedVirtualDesktopReason: String?) {
+        let parsedArgs = splitArguments(args)
+        let isMSI = exe.pathExtension.lowercased() == "msi"
+
+        if isMSI {
+            return (["msiexec", "/i", exe.path] + parsedArgs, nil)
+        }
+        if bottle.virtualDesktop, let windowsExePath = windowsPath(forUnixPath: exe.path, bottle: bottle) {
+            let desktopName = sanitizedDesktopName(bottle.name)
+            let size = Bottle.validatedVirtualDesktopSize(bottle.virtualDesktopSize)
+            return (["explorer", "/desktop=\(desktopName),\(size)", windowsExePath] + parsedArgs, nil)
+        }
+        if bottle.virtualDesktop {
+            let reason = "Virtual desktop skipped: \"\(exe.path)\" is outside this bottle's drive_c, "
+                + "so it has no Windows path for `explorer /desktop=`. Falling back to `start /unix`."
+            return (["start", "/unix", exe.path] + parsedArgs, reason)
+        }
+        return (["start", "/unix", exe.path] + parsedArgs, nil)
+    }
+
+    /// Derives a `/desktop=<name>` value from a bottle's name: wine's
+    /// `/desktop=<name>,<WxH>` argument is comma-separated, so the name
+    /// itself must contain neither a space nor a comma. Strips everything
+    /// outside `[A-Za-z0-9_-]` (ASCII letters/digits/underscore/hyphen —
+    /// so accented or non-Latin characters are stripped too, not just
+    /// whitespace/punctuation), falling back to `"Overpass"` when nothing
+    /// survives (e.g. a bottle named entirely in emoji or CJK).
+    static func sanitizedDesktopName(_ name: String) -> String {
+        let sanitized = name.filter { char in
+            char.isASCII && (char.isLetter || char.isNumber || char == "_" || char == "-")
+        }
+        return sanitized.isEmpty ? "Overpass" : sanitized
+    }
+
+    /// Converts a unix path living inside `bottle.driveC` to the
+    /// backslash-separated `C:\...` form `explorer /desktop=` (and Windows
+    /// programs generally) expect. Returns `nil` when `path` isn't under
+    /// `bottle.driveC` — there's no Windows path for a file elsewhere on
+    /// the Mac, so callers should fall back to `start /unix` (which takes
+    /// a unix path directly) instead of failing the launch.
+    static func windowsPath(forUnixPath path: String, bottle: Bottle) -> String? {
+        let driveC = bottle.driveC.standardizedFileURL.path
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard standardized.lowercased().hasPrefix(driveC.lowercased()) else { return nil }
+
+        var relative = String(standardized.dropFirst(driveC.count))
+        if relative.hasPrefix("/") { relative.removeFirst() }
+        guard !relative.isEmpty else { return nil }
+
+        let windowsRelative = relative.replacingOccurrences(of: "/", with: "\\")
+        return "C:\\\(windowsRelative)"
+    }
+
+    /// Appends one line to `logURL`, creating the file/directory if
+    /// needed — used for the "virtual desktop skipped, here's why" note
+    /// `launch` writes before falling back to `start /unix`, since that
+    /// fallback otherwise happens silently.
+    private static func appendLogLine(_ line: String, to logURL: URL) {
+        let dir = logURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        if let data = (line + "\n").data(using: .utf8) {
+            handle.write(data)
+        }
     }
 
     /// Launches a built-in Wine tool by name (`winecfg`, `regedit`,

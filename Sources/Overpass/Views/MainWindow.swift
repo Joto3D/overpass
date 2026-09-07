@@ -26,7 +26,10 @@ struct MainWindow: View {
                             }
                     }
                 } header: {
-                    SidebarSectionHeader(title: "Bottles")
+                    SidebarSectionHeader(
+                        title: "Bottles",
+                        info: "A bottle is a private Windows environment — its own C: drive, installed programs, and engine. Programs in one bottle can't see another bottle's files."
+                    )
                 }
                 Section {
                     Label("Install app", systemImage: "square.and.arrow.down.on.square")

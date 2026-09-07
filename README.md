@@ -10,10 +10,13 @@ proprietary and nothing phones home.
 
 - **Engines** — install Apple's Game Porting Toolkit (D3DMetal) or
   open-source Wine-staging with one click; both are downloaded on demand,
-  never bundled with the app.
-- **Bottles** — create isolated Wine prefixes per Windows version
-  (7/10/11), each with its own engine, ESync/MSync, Metal HUD, and
-  environment variables.
+  never bundled with the app. See [Engines](#engines) below for the
+  trade-off between the two — it's the one choice in Overpass worth
+  reading about before you make it.
+- **Bottles** — a bottle is a private Windows environment: its own C:
+  drive, installed programs, and engine, isolated from every other
+  bottle. Create one per Windows version (7/10/11), each with its own
+  engine, ESync/MSync, Metal HUD, and environment variables.
 - **Install App** — a built-in catalog of common Windows apps (Steam,
   7-Zip, Notepad++, redistributables, ...) that downloads the installer
   and runs it in a bottle for you, CrossOver-style.
@@ -55,14 +58,18 @@ proprietary and nothing phones home.
 Overpass ships two engine choices, both downloaded from Gcenx's community
 builds at first use — nothing is vendored in this repo or the app bundle:
 
-| Engine | What it is | Licence |
-|---|---|---|
-| **Game Porting Toolkit** (default) | Wine plus Apple's D3DMetal, which translates DirectX 11/12 directly to Metal. Best performance and compatibility for most games. | D3DMetal is distributed under Apple's **non-commercial** licence. |
-| **Wine-staging** | The newest upstream Wine-staging build, fully open source. DirectX 9/10/11 titles can use DXVK (Extras tab) instead of Wine's built-in translation. | Wine's own licence (LGPL). |
+| Engine | What it is | Trade-off | Licence |
+|---|---|---|---|
+| **Game Porting Toolkit** (default) | Wine plus Apple's D3DMetal, which translates DirectX 11/12 directly to Metal. Best performance for most games. | Based on an older Wine, so some modern apps — **including the Steam client itself** — can fail to run under it. | D3DMetal is distributed under Apple's **non-commercial** licence. |
+| **Wine-staging** | The newest upstream Wine-staging build, fully open source, with the widest app compatibility. DirectX 9/10/11 titles can use DXVK (Extras tab) instead of Wine's built-in translation. | DirectX goes through DXVK rather than D3DMetal, which is usually slower for games. | Wine's own licence (LGPL). |
 
-Pick Wine-staging if you need a fully open-source stack or a title
-specifically wants DXVK; otherwise Game Porting Toolkit is the better
-default for games.
+Pick Wine-staging if the Steam client (or another app) won't run under
+Game Porting Toolkit, if you need a fully open-source stack, or if a
+title specifically wants DXVK; otherwise Game Porting Toolkit is the
+better default for games. Overpass shows this same trade-off wherever
+you pick an engine — the Engines screen, New Bottle, Import Bottle, and
+the first-run setup wizard — since it's the single most consequential
+choice in the app.
 
 ### A note on macOS 28 and Rosetta
 
@@ -72,6 +79,30 @@ it plans to remove most of Rosetta 2 starting with macOS 28 (expected
 version ships then. Overpass keeps engine selection behind an `Engine`
 abstraction specifically so a native arm64 build (once one exists) can be
 added as a single new catalog entry rather than a rewrite.
+
+## Troubleshooting
+
+The app surfaces this same guidance next to the Logs tab ("Program won't
+start?") in every bottle, but it's worth having in writing too:
+
+- **Black or invisible window** — try turning on a virtual desktop
+  (Config tab), turning DXVK off (Extras tab), or switching engines
+  (Engines screen). All three change how the bottle asks macOS to put
+  pixels on screen, and one of them usually fixes it.
+- **Program won't start at all** — open the Logs tab and check the last
+  line of the run's log; it usually names the missing DLL or the crash.
+  If it mentions a missing Visual C++/.NET runtime or font, install it
+  from the Extras tab.
+- **Steam (or another app) crashes or won't run under Game Porting
+  Toolkit** — this is the known Steam-client caveat above, not
+  necessarily a bug in Overpass. Create or switch that bottle to the
+  Wine-staging engine.
+- **Fonts, installers, or Winetricks verbs failing** — several verbs
+  (the Visual C++ and .NET runtimes, corefonts) need `cabextract` to
+  unpack their downloads. If it's missing:
+  ```
+  brew install cabextract
+  ```
 
 ## Building from source
 

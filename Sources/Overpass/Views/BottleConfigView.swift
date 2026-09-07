@@ -14,6 +14,9 @@ struct BottleConfigView: View {
     @State private var newEnvKey = ""
     @State private var newEnvValue = ""
 
+    private static let presetVirtualDesktopSizes = ["1280x800", "1600x900", "1920x1080"]
+    private static let customVirtualDesktopSizeTag = "custom"
+
     private var storedBottle: Bottle? {
         appState.bottles.first { $0.id == bottleID }
     }
@@ -28,6 +31,7 @@ struct BottleConfigView: View {
                 Form {
                     identitySection(local)
                     wineSection(local)
+                    displaySection(local)
                     environmentSection(local)
                     advancedSection(local)
                 }
@@ -56,6 +60,15 @@ struct BottleConfigView: View {
             }
             .onChange(of: bottle.engineID) { _, _ in save() }
             .help("Changing engine keeps the prefix; some programs may need reinstalling.")
+
+            // Same trade-off wording the Engines screen and the new-bottle
+            // sheet show, so the choice reads identically wherever it's made.
+            if let engine {
+                Text(engineTradeoffCaption(for: engine.kind))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Picker("Windows Version", selection: binding(\.windowsVersion)) {
                 ForEach(WindowsVersion.allCases) { version in
@@ -86,6 +99,35 @@ struct BottleConfigView: View {
             Toggle("MSync", isOn: binding(\.msync))
                 .onChange(of: bottle.msync) { _, _ in save() }
                 .help("Kernel-assisted sync, newer than ESync and often faster.")
+        }
+    }
+
+    private func displaySection(_ bottle: Bottle) -> some View {
+        Section("Display") {
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Run programs in a virtual desktop", isOn: binding(\.virtualDesktop))
+                    .onChange(of: bottle.virtualDesktop) { _, _ in save() }
+                Text("Fixes windows that render black or never appear.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .help("Runs the bottle's programs inside one bordered macOS window that Wine draws into directly, instead of handing individual windows to the Mac window server.")
+
+            Picker("Desktop size", selection: virtualDesktopSizeSelection(bottle)) {
+                ForEach(Self.presetVirtualDesktopSizes, id: \.self) { size in
+                    Text(size.replacingOccurrences(of: "x", with: " \u{00d7} ")).tag(size)
+                }
+                Text("Custom\u{2026}").tag(Self.customVirtualDesktopSizeTag)
+            }
+            .disabled(!bottle.virtualDesktop)
+
+            if isCustomVirtualDesktopSize(bottle) {
+                TextField("Width x height", text: customVirtualDesktopSizeBinding())
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(!bottle.virtualDesktop)
+                    .onSubmit { commitVirtualDesktopSize() }
+                    .help("A resolution such as 1280x800, between 640x480 and 7680x4320.")
+            }
         }
     }
 
@@ -187,6 +229,49 @@ struct BottleConfigView: View {
                 appState.report(error, context: "Applying \(version.displayName)")
             }
         }
+    }
+
+    /// The picker's selection: one of the presets, or `customVirtualDesktopSizeTag`
+    /// when `bottle.virtualDesktopSize` isn't one of them. Picking a preset
+    /// writes it straight through; picking "Custom…" leaves the stored
+    /// value alone (it's already whatever non-preset string got it here)
+    /// so the text field beneath it appears pre-filled instead of blank.
+    private func virtualDesktopSizeSelection(_ bottle: Bottle) -> Binding<String> {
+        Binding(
+            get: {
+                let current = bottle.virtualDesktopSize ?? Bottle.defaultVirtualDesktopSize
+                return Self.presetVirtualDesktopSizes.contains(current) ? current : Self.customVirtualDesktopSizeTag
+            },
+            set: { newValue in
+                guard newValue != Self.customVirtualDesktopSizeTag else { return }
+                local?.virtualDesktopSize = newValue
+                save()
+            }
+        )
+    }
+
+    private func isCustomVirtualDesktopSize(_ bottle: Bottle) -> Bool {
+        let current = bottle.virtualDesktopSize ?? Bottle.defaultVirtualDesktopSize
+        return !Self.presetVirtualDesktopSizes.contains(current)
+    }
+
+    private func customVirtualDesktopSizeBinding() -> Binding<String> {
+        Binding(
+            get: { local?.virtualDesktopSize ?? Bottle.defaultVirtualDesktopSize },
+            set: { local?.virtualDesktopSize = $0 }
+        )
+    }
+
+    /// Runs the custom size field's raw text through the same validation
+    /// `WineRunner.launch` applies at launch time, so what's persisted is
+    /// always well-formed (falling back to `Bottle.defaultVirtualDesktopSize`
+    /// for anything malformed) rather than saving a string that only turns
+    /// out invalid the next time a program is run.
+    private func commitVirtualDesktopSize() {
+        guard var local else { return }
+        local.virtualDesktopSize = Bottle.validatedVirtualDesktopSize(local.virtualDesktopSize)
+        self.local = local
+        save()
     }
 
     private func sortedEnvKeys(_ bottle: Bottle) -> [String] {

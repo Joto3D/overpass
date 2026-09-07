@@ -17,6 +17,7 @@ struct OverpassApp: App {
         DebugEngineCheck.runIfRequested()
         DebugOverlayCheck.runIfRequested()
         DebugGamesCheck.runIfRequested()
+        DebugSteamCheck.runIfRequested()
 
         // SPM executables have no app bundle at dev time, so AppKit doesn't
         // automatically switch us into a regular foreground app with a menu
@@ -34,7 +35,7 @@ struct OverpassApp: App {
                 .frame(minWidth: 900, minHeight: 600)
                 .onAppear { appDelegate.appState = appState }
         }
-        .defaultSize(width: 980, height: 640)
+        .defaultSize(width: 1100, height: 720)
         .windowResizability(.contentMinSize)
     }
 }

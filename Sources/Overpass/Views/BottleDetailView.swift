@@ -164,13 +164,19 @@ struct BottleDetailView: View {
     private func toolsMenu(_ bottle: Bottle) -> some View {
         Menu {
             Button("winecfg") { appState.runTool(name: "winecfg", in: bottle) }
+                .help("Wine's own settings window for this bottle — Windows version, drives, graphics, and virtual desktop.")
             Button("regedit") { appState.runTool(name: "regedit", in: bottle) }
+                .help("Windows Registry Editor for this bottle.")
             Button("explorer") { appState.runTool(name: "explorer", in: bottle) }
+                .help("A Windows-style file browser for this bottle's C: drive.")
             Button("Task Manager") { appState.runTool(name: "taskmgr", in: bottle) }
+                .help("See or force-quit the Windows processes currently running in this bottle.")
             Divider()
             Button("Open C: drive in Finder") { appState.openDriveC(bottle) }
+                .help("Reveal this bottle's C: drive as a normal Finder folder.")
             Divider()
             Button("Rescan programs") { Task { await rescanPrograms(bottle) } }
+                .help("Scan this bottle's Desktop, Start Menu, and Program Files again for newly installed programs.")
         } label: {
             Image(systemName: "ellipsis.circle")
         }

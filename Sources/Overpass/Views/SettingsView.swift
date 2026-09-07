@@ -17,9 +17,6 @@ struct SettingsView: View {
         @Bindable var themeStore = themeStore
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.xl) {
-                Text("Settings")
-                    .font(Theme.titleFont())
-
                 VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                     SectionHeader(title: "Appearance", systemImage: "paintpalette")
                     LazyVGrid(columns: columns, spacing: Theme.Spacing.s) {
