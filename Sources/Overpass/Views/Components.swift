@@ -56,15 +56,34 @@ struct BottleSidebarRow: View {
                 Text(bottle.name)
                     .font(.system(size: 13))
                     .lineLimit(1)
+                    .minimumScaleFactor(0.9)
                 if engine != nil {
                     Text(engineShortName(engine))
-                        .font(.caption2)
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
         }
-        .padding(.vertical, 1)
+        .frame(height: Theme.Metrics.row)
+    }
+}
+
+// MARK: - Plain sidebar section header
+
+/// A `List` section header for the sidebar: the shared 11pt uppercase,
+/// tracked, secondary style (see `SectionHeader`) but without its accent
+/// underline — a sidebar section title should stay quiet, not compete with
+/// the one accent already reserved for a bottle's "Run .exe…" button.
+struct SidebarSectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(Theme.headingFont(11))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .tracking(0.6)
     }
 }
 
@@ -81,7 +100,7 @@ struct IconToolbarButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .frame(width: 16, height: 16)
+                .frame(width: Theme.Metrics.toolbarControl, height: Theme.Metrics.toolbarControl)
         }
         .buttonStyle(.borderless)
         .help(help)

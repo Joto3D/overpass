@@ -36,11 +36,14 @@ enum DebugSelfTest {
         testProgramScannerCatalogDefaultsAndNaming()
         testWineRunnerEnvironment(root: root)
         testWineRunnerSplitArguments()
+        testD3DMetalOverlay(root: root)
         testPerformanceSettings(root: root)
         testAppCatalog()
         testEngineCatalog()
         testBottleCodable()
         testLogStore(root: root)
+        testLogFileName()
+        testDiagnosticsFormatBytes()
 
         print("\n\(passCount) passed, \(failCount) failed")
         fflush(stdout)
@@ -410,14 +413,15 @@ enum DebugSelfTest {
 
     // MARK: - WineRunner.environment
 
-    private static func makeTestEngine(kind: EngineKind, root: URL) -> InstalledEngine {
-        let engineRoot = root.appendingPathComponent("engine-\(kind.rawValue)", isDirectory: true)
+    private static func makeTestEngine(kind: EngineKind, root: URL, id: String? = nil) -> InstalledEngine {
+        let engineID = id ?? "\(kind.rawValue)-selftest"
+        let engineRoot = root.appendingPathComponent("engine-\(engineID)", isDirectory: true)
         let bin = engineRoot.appendingPathComponent("bin", isDirectory: true)
         let lib = engineRoot.appendingPathComponent("lib", isDirectory: true)
         try? FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: lib, withIntermediateDirectories: true)
         return InstalledEngine(
-            id: "\(kind.rawValue)-selftest",
+            id: engineID,
             kind: kind,
             version: "selftest",
             rootDir: engineRoot,
@@ -497,6 +501,141 @@ enum DebugSelfTest {
         // still flushed at end-of-string.
         let unbalanced = WineRunner.splitArguments(#"a "b"#)
         check("splitArguments handles an unbalanced quote without crashing", unbalanced == ["a", "b"], "got \(unbalanced)")
+    }
+
+    // MARK: - D3DMetalOverlay
+
+    /// Exercises `D3DMetalOverlay.sourceEngine`/`isAvailable` against fake
+    /// engine trees under the scratch `root`, and `WineRunner.environment`
+    /// with a real (but throwaway, deleted via `defer`) bottle+overlay
+    /// under the actual `Paths.bottles` tree — same "unavoidably touches
+    /// the real Overpass support directory" reasoning as
+    /// `testProgramScannerMerge`/`testLogStore`, since `Bottle.prefixDir`
+    /// has no injectable override.
+    private static func testD3DMetalOverlay(root: URL) {
+        // -- sourceEngine / isAvailable, against fake trees (no real Wine
+        //    binaries needed — only file *presence* is checked). --
+        let incompleteGPTK = makeTestEngine(kind: .gptk, root: root)
+        check(
+            "D3DMetalOverlay.sourceEngine ignores a GPTK engine missing D3DMetal files",
+            D3DMetalOverlay.sourceEngine(from: [incompleteGPTK]) == nil
+        )
+        check(
+            "D3DMetalOverlay.isAvailable is false with only an incomplete GPTK engine",
+            D3DMetalOverlay.isAvailable(engines: [incompleteGPTK]) == false
+        )
+
+        let completeGPTK = makeTestEngine(kind: .gptk, root: root, id: "gptk-complete")
+        populateFakeD3DMetalSource(in: completeGPTK)
+        check(
+            "D3DMetalOverlay.sourceEngine finds a GPTK engine with D3DMetal files",
+            D3DMetalOverlay.sourceEngine(from: [incompleteGPTK, completeGPTK])?.id == completeGPTK.id
+        )
+        check(
+            "D3DMetalOverlay.isAvailable is true once a complete GPTK engine is present",
+            D3DMetalOverlay.isAvailable(engines: [incompleteGPTK, completeGPTK])
+        )
+
+        let wineStagingOnly = makeTestEngine(kind: .wineStaging, root: root)
+        check(
+            "D3DMetalOverlay.sourceEngine never picks a Wine-staging engine",
+            D3DMetalOverlay.sourceEngine(from: [wineStagingOnly]) == nil
+        )
+
+        // -- install() against the fake GPTK tree, into a throwaway real
+        //    bottle, then WineRunner.environment() with the overlay
+        //    actually installed. --
+        var bottle = Bottle(name: "overlay-selftest", engineID: "wine-staging-selftest")
+        bottle.d3dMetalOverlay = true
+        defer { try? FileManager.default.removeItem(at: bottle.prefixDir) }
+
+        do {
+            try D3DMetalOverlay.install(into: bottle, from: completeGPTK) { _ in }
+            check("D3DMetalOverlay.install reports isInstalled afterward", D3DMetalOverlay.isInstalled(in: bottle))
+            check(
+                "D3DMetalOverlay.install copies the expected DLLs",
+                FileManager.default.fileExists(atPath: D3DMetalOverlay.overlayWindowsDir(for: bottle).appendingPathComponent("d3d11.dll").path)
+            )
+            let so = D3DMetalOverlay.overlayUnixDir(for: bottle).appendingPathComponent("d3d11.so")
+            let target = try? FileManager.default.destinationOfSymbolicLink(atPath: so.path)
+            check(
+                "D3DMetalOverlay.install recreates the d3d11.so symlink pointing at ../../external/libd3dshared.dylib",
+                target == "../../external/libd3dshared.dylib",
+                "got \(target ?? "nil")"
+            )
+        } catch {
+            check("D3DMetalOverlay.install succeeds against a complete fake GPTK tree", false, "\(error)")
+        }
+
+        let wineStagingEngine = makeTestEngine(kind: .wineStaging, root: root, id: "wine-staging-selftest")
+        let overlayEnv = WineRunner.environment(for: bottle, engine: wineStagingEngine)
+        check(
+            "environment prepends WINEDLLPATH with the overlay's lib/wine when the overlay is on and installed",
+            overlayEnv["WINEDLLPATH"]?.hasPrefix(D3DMetalOverlay.overlayWineDir(for: bottle).path) == true,
+            "got \(overlayEnv["WINEDLLPATH"] ?? "nil")"
+        )
+        check(
+            "environment extends DYLD_FALLBACK_LIBRARY_PATH with the overlay's lib/external",
+            overlayEnv["DYLD_FALLBACK_LIBRARY_PATH"]?.contains(D3DMetalOverlay.overlayExternalDir(for: bottle).path) == true,
+            "got \(overlayEnv["DYLD_FALLBACK_LIBRARY_PATH"] ?? "nil")"
+        )
+        check("environment sets D3DMetal=1 when the overlay is on", overlayEnv["D3DMetal"] == "1")
+        check(
+            "environment sets CX_APPLEGPTK_LIBD3DSHARED_PATH to the overlay's dylib",
+            overlayEnv["CX_APPLEGPTK_LIBD3DSHARED_PATH"] == D3DMetalOverlay.overlayLibD3DShared(for: bottle).path
+        )
+        check(
+            "environment forces the overlay dll names to builtin (=b) in WINEDLLOVERRIDES",
+            overlayEnv["WINEDLLOVERRIDES"]?.contains("d3d11") == true && overlayEnv["WINEDLLOVERRIDES"]?.hasSuffix("=b") == true,
+            "got \(overlayEnv["WINEDLLOVERRIDES"] ?? "nil")"
+        )
+
+        // -- Guardrails: no-op on GPTK even with the flag set, and no-op
+        //    on Wine-staging when the overlay hasn't actually been
+        //    installed into the bottle. --
+        let gptkEnv = WineRunner.environment(for: bottle, engine: completeGPTK)
+        check("environment leaves D3DMetal unset on a GPTK engine even when bottle.d3dMetalOverlay is true", gptkEnv["D3DMetal"] == nil)
+        check(
+            "environment's WINEDLLPATH is untouched by the overlay on a GPTK engine",
+            gptkEnv["WINEDLLPATH"] == nil
+        )
+
+        var uninstalledBottle = Bottle(name: "overlay-not-installed", engineID: "wine-staging-selftest")
+        uninstalledBottle.d3dMetalOverlay = true
+        let notInstalledEnv = WineRunner.environment(for: uninstalledBottle, engine: wineStagingEngine)
+        check(
+            "environment is a no-op when d3dMetalOverlay is on but never installed into the bottle",
+            notInstalledEnv["D3DMetal"] == nil && notInstalledEnv["WINEDLLPATH"] == nil
+        )
+
+        do {
+            try D3DMetalOverlay.uninstall(from: bottle)
+            check("D3DMetalOverlay.uninstall removes the overlay directory", !D3DMetalOverlay.isInstalled(in: bottle))
+        } catch {
+            check("D3DMetalOverlay.uninstall succeeds", false, "\(error)")
+        }
+    }
+
+    /// Populates a fake GPTK engine's `lib/` with just enough files
+    /// (empty stand-ins, never actually loaded by these tests) for
+    /// `D3DMetalOverlay.sourceEngine`/`install` to treat it as a real
+    /// D3DMetal source: `external/libd3dshared.dylib`, one PE dll per
+    /// `D3DMetalOverlay.dllBaseNames`, and its `.so` unixlib symlink.
+    private static func populateFakeD3DMetalSource(in engine: InstalledEngine) {
+        let fm = FileManager.default
+        let external = engine.libDir.appendingPathComponent("external", isDirectory: true)
+        let windows = engine.libDir.appendingPathComponent("wine/x86_64-windows", isDirectory: true)
+        let unix = engine.libDir.appendingPathComponent("wine/x86_64-unix", isDirectory: true)
+        try? fm.createDirectory(at: external, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: windows, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: unix, withIntermediateDirectories: true)
+        fm.createFile(atPath: external.appendingPathComponent("libd3dshared.dylib").path, contents: Data("fake".utf8))
+        for base in D3DMetalOverlay.dllBaseNames {
+            fm.createFile(atPath: windows.appendingPathComponent("\(base).dll").path, contents: Data("fake".utf8))
+            let so = unix.appendingPathComponent("\(base).so")
+            try? fm.removeItem(at: so)
+            try? fm.createSymbolicLink(atPath: so.path, withDestinationPath: "../../external/libd3dshared.dylib")
+        }
     }
 
     // MARK: - PerformanceSettings
@@ -670,5 +809,59 @@ enum DebugSelfTest {
         let pattern = try! NSRegularExpression(pattern: #"^\d{8}-\d{6}-notepad\.log$"#)
         let matched = pattern.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
         check("newLogURL name matches <yyyyMMdd-HHmmss>-<exe>.log", matched, "got \(name)")
+    }
+
+    // MARK: - LogFileName
+
+    private static func testLogFileName() {
+        let bottleID = UUID()
+        let url = LogStore.newLogURL(bottleID: bottleID, exeName: "My-Game")
+        defer { try? FileManager.default.removeItem(at: Paths.logs.appendingPathComponent(bottleID.uuidString)) }
+
+        let parsed = LogFileName.parse(url)
+        check("LogFileName.parse extracts the program name", parsed?.program == "My-Game", "got \(parsed?.program ?? "nil")")
+        check(
+            "LogFileName.parse's date round-trips through the stamp within a minute",
+            parsed.map { abs($0.date.timeIntervalSinceNow) < 60 } ?? false
+        )
+
+        let display = LogFileName.displayName(for: url)
+        check(
+            "LogFileName.displayName includes the program name",
+            display.contains("My-Game"),
+            "got \(display)"
+        )
+        check(
+            "LogFileName.displayName is not just the raw filename",
+            display != url.lastPathComponent,
+            "got \(display)"
+        )
+
+        // A filename that doesn't match the `<stamp>-<exe>.log` shape (no
+        // dash at all) must not crash, and falls back to the raw name.
+        let unrelated = Paths.logs.appendingPathComponent("not-a-log-name-at-all-either.log")
+        check("LogFileName.parse returns nil for a non-conforming name", LogFileName.parse(unrelated) == nil)
+        check(
+            "LogFileName.displayName falls back to the raw filename when parse fails",
+            LogFileName.displayName(for: unrelated) == unrelated.lastPathComponent
+        )
+    }
+
+    // MARK: - Diagnostics.formatBytes
+
+    private static func testDiagnosticsFormatBytes() {
+        check("formatBytes: bytes stay in B", Diagnostics.formatBytes(512) == "512 B", "got \(Diagnostics.formatBytes(512))")
+        check("formatBytes: exactly 1024 rolls over to KB", Diagnostics.formatBytes(1024) == "1.0 KB", "got \(Diagnostics.formatBytes(1024))")
+        check(
+            "formatBytes: MB range",
+            Diagnostics.formatBytes(5 * 1024 * 1024) == "5.0 MB",
+            "got \(Diagnostics.formatBytes(5 * 1024 * 1024))"
+        )
+        check(
+            "formatBytes: GB range (matches the ~2GB Steam-bottle measurement used for the run-tracking change)",
+            Diagnostics.formatBytes(2 * 1024 * 1024 * 1024) == "2.0 GB",
+            "got \(Diagnostics.formatBytes(2 * 1024 * 1024 * 1024))"
+        )
+        check("formatBytes: zero", Diagnostics.formatBytes(0) == "0 B", "got \(Diagnostics.formatBytes(0))")
     }
 }

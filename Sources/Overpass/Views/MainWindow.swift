@@ -15,7 +15,7 @@ struct MainWindow: View {
         @Bindable var appState = appState
         NavigationSplitView {
             List(selection: $appState.selection) {
-                Section("Bottles") {
+                Section {
                     ForEach(appState.bottles) { bottle in
                         BottleSidebarRow(bottle: bottle, engine: appState.engine(for: bottle))
                             .tag(AppState.SidebarItem.bottle(bottle.id))
@@ -25,22 +25,29 @@ struct MainWindow: View {
                                 }
                             }
                     }
+                } header: {
+                    SidebarSectionHeader(title: "Bottles")
                 }
-                Section("Library") {
-                    Label("Install App", systemImage: "square.and.arrow.down.on.square")
+                Section {
+                    Label("Install app", systemImage: "square.and.arrow.down.on.square")
+                        .frame(height: Theme.Metrics.row)
                         .tag(AppState.SidebarItem.installApps)
                     Label("Engines", systemImage: "gearshape.2")
+                        .frame(height: Theme.Metrics.row)
                         .tag(AppState.SidebarItem.engines)
                     Label("Settings", systemImage: "slider.horizontal.3")
+                        .frame(height: Theme.Metrics.row)
                         .tag(AppState.SidebarItem.settings)
+                } header: {
+                    SidebarSectionHeader(title: "Library")
                 }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Button("New Bottle…") { showNewBottleSheet = true }
-                        Button("Import Bottle…") { showImportBottleSheet = true }
+                        Button("New bottle…") { showNewBottleSheet = true }
+                        Button("Import bottle…") { showImportBottleSheet = true }
                     } label: {
                         Label("Add", systemImage: "plus")
                     }
@@ -65,6 +72,12 @@ struct MainWindow: View {
                                        description: Text("Create a bottle to run Windows programs."))
             }
         }
+        // The window's default/min size is declared on the `Window` scene
+        // in OverpassApp.swift (owned by another agent this pass); this
+        // frame enforces the spec's 960×640 floor from our side too so the
+        // split view never collapses below it regardless of what the scene
+        // declares.
+        .frame(minWidth: 960, minHeight: 640)
         .alert("Overpass", isPresented: Binding(
             get: { appState.errorMessage != nil },
             set: { if !$0 { appState.errorMessage = nil } }

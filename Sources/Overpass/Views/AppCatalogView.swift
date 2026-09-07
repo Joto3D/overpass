@@ -34,7 +34,9 @@ struct AppCatalogView: View {
                 categoryChips
 
                 if filteredApps.isEmpty {
-                    ContentUnavailableView.search(text: query)
+                    Text(query.isEmpty ? "No apps in this category." : "No apps match \u{201c}\(query)\u{201d}.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.top, Theme.Spacing.xl)
                 } else {
@@ -156,6 +158,10 @@ private struct AppCatalogCard: View {
         return nil
     }
 
+    /// Fixed so every card in the grid is the same height regardless of
+    /// whether a badge is present or how long the name/blurb run.
+    private static let cardHeight: CGFloat = 182
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
             HStack(alignment: .top, spacing: Theme.Spacing.m) {
@@ -166,12 +172,12 @@ private struct AppCatalogCard: View {
                         .font(.system(size: 22, weight: .medium))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 48, height: 48)
+                .frame(width: 44, height: 44)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(app.name)
                         .font(Theme.headingFont(15))
-                        .lineLimit(1)
+                        .lineLimit(2)
                     Text(app.publisher)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -183,16 +189,18 @@ private struct AppCatalogCard: View {
             Text(app.blurb)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
 
             if let badge {
                 Chip(text: badge.text, systemImage: badge.systemImage, tint: badge.tint)
             }
         }
         .padding(Theme.Spacing.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .topLeading)
         .overpassCard()
     }
 }
@@ -213,6 +221,7 @@ private struct AppCatalogDetailSheet: View {
     /// The bottle an install actually targeted, resolved once the install
     /// starts (for `.newBottle`, only known after `createBottle` returns).
     @State private var targetBottleID: UUID?
+    @State private var isLogExpanded = false
 
     private let installState = AppInstallState.shared
 
@@ -360,7 +369,12 @@ private struct AppCatalogDetailSheet: View {
                     .foregroundStyle(.secondary)
             }
 
-            outputBox
+            DisclosureGroup("Log", isExpanded: $isLogExpanded) {
+                outputBox
+                    .padding(.top, Theme.Spacing.xs)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -378,7 +392,7 @@ private struct AppCatalogDetailSheet: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: 140)
+        .frame(height: 120)
         .padding(Theme.Spacing.s)
         .background {
             RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)

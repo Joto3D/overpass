@@ -32,8 +32,10 @@ struct BottleConfigView: View {
                     advancedSection(local)
                 }
                 .formStyle(.grouped)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                ContentUnavailableView("Bottle not found", systemImage: "questionmark.circle")
+                emptyState
             }
         }
         .onAppear { local = storedBottle }
@@ -88,7 +90,7 @@ struct BottleConfigView: View {
     }
 
     private func environmentSection(_ bottle: Bottle) -> some View {
-        Section("Environment Variables") {
+        Section("Environment") {
             ForEach(sortedEnvKeys(bottle), id: \.self) { key in
                 HStack {
                     Text(key)
@@ -147,6 +149,13 @@ struct BottleConfigView: View {
                 Task { await appState.stopAll(in: bottle) }
             }
         }
+    }
+
+    private var emptyState: some View {
+        Text("Bottle not found.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     // MARK: - Helpers

@@ -39,7 +39,6 @@ struct PerformanceView: View {
         if let bottle {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.l) {
-                    header
                     statusRow
                     presetSection
                     graphicsSection(bottle)
@@ -52,12 +51,19 @@ struct PerformanceView: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(Theme.Spacing.xl)
-                .frame(maxWidth: 640, alignment: .leading)
+                .frame(maxWidth: 760, alignment: .leading)
             }
             .task(id: bottleID) { load(bottle) }
         } else {
-            ContentUnavailableView("Bottle not found", systemImage: "questionmark.circle")
+            emptyState
         }
+    }
+
+    private var emptyState: some View {
+        Text("Bottle not found.")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     // MARK: - Load
@@ -70,17 +76,7 @@ struct PerformanceView: View {
         registryError = nil
     }
 
-    // MARK: - Header / status
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Performance")
-                .font(Theme.titleFont())
-            Text("Graphics and runtime tuning for this bottle.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
+    // MARK: - Status
 
     @ViewBuilder
     private var statusRow: some View {
@@ -129,7 +125,7 @@ struct PerformanceView: View {
                 }
                 Spacer()
                 Button("Apply Preset") { applyPreset() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
             }
         }
         .padding(Theme.Spacing.l)

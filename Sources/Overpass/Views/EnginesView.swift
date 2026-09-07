@@ -57,7 +57,7 @@ struct EnginesView: View {
                 gptk4Note
             }
             .padding(Theme.Spacing.xl)
-            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: 760, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
         .task {
@@ -129,29 +129,17 @@ struct EnginesView: View {
     }
 
     private var rosettaNote: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.s) {
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-            Text("Engines run under Rosetta 2. Apple plans to remove most of Rosetta 2 in macOS 28 (2027).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(Theme.Spacing.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overpassCard(cornerRadius: Theme.Radius.row)
+        Text("Engines run under Rosetta 2, which Apple plans to remove most of in macOS 28 (2027).")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
 
     private var gptk4Note: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.s) {
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-            Text("Newest redistributable GPTK is whatever Gcenx has published; Apple's own GPTK 4 beta needs an Apple Developer download.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(Theme.Spacing.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overpassCard(cornerRadius: Theme.Radius.row)
+        Text("Newest redistributable GPTK is whatever Gcenx has published; Apple's GPTK 4 beta needs an Apple Developer download.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
 }
 
@@ -256,7 +244,7 @@ private struct EngineRow: View {
             Button("Install") {
                 Task { await appState.installEngine(release) }
             }
-            .buttonStyle(.aurora)
+            .buttonStyle(.bordered)
         }
     }
 

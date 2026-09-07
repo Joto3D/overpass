@@ -18,7 +18,7 @@ struct LogViewerView: View {
     var body: some View {
         HStack(spacing: 0) {
             List(logFiles, id: \.self, selection: $selected) { url in
-                Text(url.lastPathComponent)
+                Text(LogFileName.displayName(for: url))
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -39,11 +39,15 @@ struct LogViewerView: View {
 
             VStack(alignment: .leading, spacing: Theme.Spacing.s) {
                 HStack {
-                    Text(selected?.lastPathComponent ?? "No log selected")
+                    Text(selected.map { LogFileName.displayName(for: $0) } ?? "No log selected")
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
+                    Button("Copy Log") { copyLog() }
+                        .buttonStyle(.quiet)
+                        .fixedSize()
+                        .disabled(selected == nil || content.isEmpty)
                     Button("Reveal in Finder") { reveal() }
                         .buttonStyle(.quiet)
                         .fixedSize()
@@ -60,7 +64,7 @@ struct LogViewerView: View {
                         .foregroundStyle(content.isEmpty ? .secondary : .primary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(Theme.Spacing.s)
+                        .padding(Theme.Spacing.m)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overpassCard(cornerRadius: Theme.Radius.row)
@@ -104,6 +108,13 @@ struct LogViewerView: View {
     private func reveal() {
         guard let selected else { return }
         NSWorkspace.shared.activateFileViewerSelecting([selected])
+    }
+
+    private func copyLog() {
+        guard !content.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(content, forType: .string)
     }
 
     private func clearLogs() {

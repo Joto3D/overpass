@@ -15,6 +15,8 @@ struct OverpassApp: App {
         DebugSelfTest.runIfRequested()
         DebugImportCheck.runIfRequested()
         DebugEngineCheck.runIfRequested()
+        DebugOverlayCheck.runIfRequested()
+        DebugGamesCheck.runIfRequested()
 
         // SPM executables have no app bundle at dev time, so AppKit doesn't
         // automatically switch us into a regular foreground app with a menu

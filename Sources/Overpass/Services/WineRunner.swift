@@ -39,6 +39,14 @@ enum WineRunner {
             env["WINEDLLOVERRIDES"] = "d3d9,d3d10core,d3d11,dxgi=n,b"
         }
 
+        // D3DMetal overlay: only meaningful on Wine-staging — GPTK already
+        // has D3DMetal built in, so this is a no-op there even if the
+        // bottle's flag is somehow set. See `D3DMetalOverlay`'s doc
+        // comment for the CrossOver findings this design is based on.
+        if engine.kind == .wineStaging, bottle.d3dMetalOverlay {
+            applyD3DMetalOverlay(to: &env, bottle: bottle)
+        }
+
         let processEnv = ProcessInfo.processInfo.environment
         if let home = processEnv["HOME"] { env["HOME"] = home }
         if let user = processEnv["USER"] { env["USER"] = user }
@@ -49,6 +57,57 @@ enum WineRunner {
         }
         for (key, value) in bottle.env { env[key] = value }
         return env
+    }
+
+    /// Points Wine's builtin-dll search (`WINEDLLPATH`, per `wine(1)`: "a
+    /// colon-separated list of directories to add to the standard PE and
+    /// Unix dll search path when loading builtin dlls") at the bottle's
+    /// `D3DMetalOverlay` directory, ahead of anything already set, and
+    /// forces the overlaid dll names to load as builtin (`=b`) rather than
+    /// whatever a native system32 copy or the engine's own default order
+    /// would otherwise pick — matching the layout CrossOver's own `wine`
+    /// wrapper sets up for the same files. Also sets
+    /// `CX_APPLEGPTK_LIBD3DSHARED_PATH`/`D3DMetal=1`, which CrossOver's
+    /// D3DMetal build honors directly.
+    ///
+    /// **This was verified (September 2026) not to actually load the
+    /// overlay** on the Gcenx Wine Staging 11.16 build Overpass ships —
+    /// see `D3DMetalOverlay`'s doc comment for the `WINEDEBUG=+loaddll`
+    /// evidence and the fallback that was tried and also rejected. It's
+    /// still wired up because it's harmless either way: this Wine build's
+    /// `find_builtin_dll` ignores `WINEDLLPATH` for these names and falls
+    /// through to the engine's own stock `d3d11.dll`/`dxgi.dll`/etc, so a
+    /// Wine-staging bottle's existing DirectX support (wined3d or DXVK)
+    /// keeps working unchanged whether or not this flag is on. A no-op
+    /// (leaves `env` untouched) when the overlay hasn't actually been
+    /// installed into this bottle yet.
+    private static func applyD3DMetalOverlay(to env: inout [String: String], bottle: Bottle) {
+        guard D3DMetalOverlay.isInstalled(in: bottle) else { return }
+
+        let overlayWineDir = D3DMetalOverlay.overlayWineDir(for: bottle)
+        let overlayExternalDir = D3DMetalOverlay.overlayExternalDir(for: bottle)
+
+        if let existing = env["WINEDLLPATH"], !existing.isEmpty {
+            env["WINEDLLPATH"] = "\(overlayWineDir.path):\(existing)"
+        } else {
+            env["WINEDLLPATH"] = overlayWineDir.path
+        }
+
+        if let existing = env["DYLD_FALLBACK_LIBRARY_PATH"], !existing.isEmpty {
+            env["DYLD_FALLBACK_LIBRARY_PATH"] = "\(existing):\(overlayExternalDir.path)"
+        } else {
+            env["DYLD_FALLBACK_LIBRARY_PATH"] = overlayExternalDir.path
+        }
+
+        env["D3DMetal"] = "1"
+        env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = D3DMetalOverlay.overlayLibD3DShared(for: bottle).path
+
+        let overlayOverride = "\(D3DMetalOverlay.dllBaseNames.joined(separator: ","))=b"
+        if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
+            env["WINEDLLOVERRIDES"] = "\(existing);\(overlayOverride)"
+        } else {
+            env["WINEDLLOVERRIDES"] = overlayOverride
+        }
     }
 
     // MARK: - Running a tool to completion

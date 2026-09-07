@@ -45,7 +45,8 @@ struct SetupWizardView: View {
                     appState.showSetupWizard = false
                     dismiss()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.accent)
+                .fixedSize()
             }
         }
         .padding(Theme.Spacing.xl)
@@ -110,7 +111,7 @@ struct SetupWizardView: View {
                             isCreatingBottle = false
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                     .disabled(isCreatingBottle || bottleName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 if isCreatingBottle {

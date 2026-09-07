@@ -112,7 +112,6 @@ extension AppState {
             updateBottle(updated)
 
             let recordID = record.id
-            let prefixPath = bottle.prefixDir.path
             Task.detached { [weak self] in
                 process.waitUntilExit()
                 // The process we're watching is `wine ... start /unix
@@ -121,24 +120,34 @@ extension AppState {
                 // before that process actually finishes. Waiting on it
                 // alone flips `isRunning` off (and the Stop button back to
                 // disabled) within a second or two of every launch, no
-                // matter how long the program itself keeps running. Keep
-                // polling for any process still alive under this bottle's
-                // prefix before declaring the run over.
+                // matter how long the program itself keeps running.
                 //
-                // `pgrep -f <prefix>` (what `WineRunner.stop` uses to
-                // decide whether to escalate) can't be reused here: none of
-                // the wine64-preloader children actually carry the prefix
-                // path in their argv, so it never matches. `lsof +D
-                // <prefix>` instead lists every process with an open file
-                // (cwd, loaded dll, the exe itself, ...) anywhere under the
-                // prefix, which every process in the bottle always has.
-                while true {
-                    guard let result = try? await ShellRunner.run("/usr/sbin/lsof", ["+D", prefixPath]),
-                          !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { break }
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                }
+                // A previous version of this polled `lsof +D <prefix>`
+                // every 1.5s to see whether anything was still alive under
+                // the bottle's prefix. Measured against the "Steam" bottle
+                // (a full Steam client install, ~2GB / ~9.6k files under
+                // its prefix — the worst case on this machine): ~0.12s real
+                // time and ~0.12s combined user+sys CPU per invocation
+                // (`/usr/sbin/lsof +D <prefix>`, 5-run average). That's
+                // roughly 8% of a CPU core spent purely on bookkeeping for
+                // the entire time any program is running in that bottle —
+                // real, avoidable cost for something with a much cheaper
+                // event-driven answer.
+                //
+                // `wineserver -w` waits until the wineserver instance
+                // servicing this exact `WINEPREFIX` has no clients left and
+                // exits — i.e. "nothing is running in this bottle anymore"
+                // — with zero polling: it blocks on the server's own exit
+                // notification and returns instantly if the prefix is
+                // already idle (measured: ~0.02s against the same Steam
+                // prefix with nothing running in it).
+                _ = try? await ProcessRunner.run(
+                    engine.wineserverBinary,
+                    ["-w"],
+                    environment: WineRunner.environment(for: bottle, engine: engine)
+                )
+                guard let self else { return }
                 await MainActor.run {
-                    guard let self else { return }
                     if let index = self.runs.firstIndex(where: { $0.id == recordID }) {
                         self.runs[index].isRunning = false
                     }

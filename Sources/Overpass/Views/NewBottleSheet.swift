@@ -64,13 +64,14 @@ struct NewBottleSheet: View {
                     .disabled(isCreating)
                 if !appState.installedEngines.isEmpty {
                     Button("Create") { create() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.accent)
+                        .fixedSize()
                         .disabled(!canCreate)
                 }
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 420)
+        .frame(width: 460)
         .onAppear {
             if engineID.isEmpty {
                 engineID = appState.installedEngines.first?.id ?? ""

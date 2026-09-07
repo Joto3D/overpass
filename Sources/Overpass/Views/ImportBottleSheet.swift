@@ -83,13 +83,14 @@ struct ImportBottleSheet: View {
                     .disabled(importState.isImporting)
                 if !appState.installedEngines.isEmpty && !importState.isImporting {
                     Button("Import") { Task { await performImport() } }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.accent)
+                        .fixedSize()
                         .disabled(!canImport)
                 }
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 480)
+        .frame(width: 620)
         .onAppear(perform: refresh)
         .onChange(of: selectedSourceID) { _, _ in prefillForSelection() }
     }

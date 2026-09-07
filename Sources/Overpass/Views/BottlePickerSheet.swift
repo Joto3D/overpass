@@ -38,12 +38,13 @@ struct BottlePickerSheet: View {
                     dismiss()
                 }
                 Button("Run") { runSelected() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.accent)
+                    .fixedSize()
                     .disabled(selectedBottleID == nil)
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 420)
+        .frame(width: 460)
         .onAppear {
             selectedBottleID = appState.bottles
                 .sorted { ($0.lastUsed ?? .distantPast) > ($1.lastUsed ?? .distantPast) }

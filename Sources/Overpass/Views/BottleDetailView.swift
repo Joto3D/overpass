@@ -16,14 +16,27 @@ struct BottleDetailView: View {
     @Environment(ThemeStore.self) private var themeStore
     @State private var selectedTab: Tab = .programs
     @State private var isDropTargeted = false
+    /// Cached `GameLibrary.scan` result, used only to decide whether the
+    /// Games tab appears at all — `GamesView` itself re-scans
+    /// independently once shown. Rescanned on `.task(id: bottleID)`
+    /// rather than a plain `.task`: this view keeps its SwiftUI identity
+    /// across bottle switches (only `bottleID` changes), so a bare
+    /// `.task` would never refire and the tab would keep reflecting
+    /// whichever bottle was selected first.
+    @State private var hasGames = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case programs = "Programs"
+        case games = "Games"
         case config = "Config"
         case performance = "Performance"
         case extras = "Extras"
         case logs = "Logs"
         var id: String { rawValue }
+    }
+
+    private var visibleTabs: [Tab] {
+        Tab.allCases.filter { $0 != .games || hasGames }
     }
 
     private var bottle: Bottle? {
@@ -36,22 +49,26 @@ struct BottleDetailView: View {
 
     var body: some View {
         if let bottle {
-            VStack(alignment: .leading, spacing: Theme.Spacing.l) {
+            VStack(alignment: .leading, spacing: 0) {
                 header(bottle)
 
                 Picker("View", selection: $selectedTab) {
-                    ForEach(Tab.allCases) { tab in
+                    ForEach(visibleTabs) { tab in
                         Text(tab.rawValue).tag(tab)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 320)
+                .frame(maxWidth: 320, alignment: .leading)
+                .padding(.top, Theme.Spacing.l)
+                .padding(.bottom, Theme.Spacing.outer)
 
                 Group {
                     switch selectedTab {
                     case .programs:
                         ProgramsGridView(bottleID: bottle.id)
+                    case .games:
+                        GamesView(bottleID: bottle.id)
                     case .config:
                         BottleConfigView(bottleID: bottle.id)
                     case .performance:
@@ -64,8 +81,14 @@ struct BottleDetailView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .padding(Theme.Spacing.xl)
+            .padding(Theme.Spacing.outer)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .task(id: bottleID) {
+                hasGames = !(await GameLibrary.scan(bottle: bottle).isEmpty)
+                if !hasGames, selectedTab == .games {
+                    selectedTab = .programs
+                }
+            }
             .background {
                 if isDropTargeted {
                     RoundedRectangle(cornerRadius: 0)
@@ -101,7 +124,9 @@ struct BottleDetailView: View {
         HStack(alignment: .center, spacing: Theme.Spacing.m) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(bottle.name)
-                    .font(Theme.titleFont())
+                    .font(Theme.titleFont(22, weight: .semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.9)
                 Text(subtitle(bottle))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -109,11 +134,15 @@ struct BottleDetailView: View {
             }
             Spacer()
             HStack(spacing: Theme.Spacing.s) {
+                // The one accent control on this screen — everything else
+                // beside it (Stop, the tools menu) stays quiet/bordered.
                 Button("Run .exe…") { pickAndRun(bottle) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.accent)
+                    .fixedSize()
                 Button("Stop") {
                     Task { await appState.stopAll(in: bottle) }
                 }
+                .buttonStyle(.bordered)
                 .disabled(!isRunning)
                 toolsMenu(bottle)
             }
@@ -140,9 +169,9 @@ struct BottleDetailView: View {
             Button("explorer") { appState.runTool(name: "explorer", in: bottle) }
             Button("Task Manager") { appState.runTool(name: "taskmgr", in: bottle) }
             Divider()
-            Button("Open C: Drive in Finder") { appState.openDriveC(bottle) }
+            Button("Open C: drive in Finder") { appState.openDriveC(bottle) }
             Divider()
-            Button("Rescan Programs") { Task { await rescanPrograms(bottle) } }
+            Button("Rescan programs") { Task { await rescanPrograms(bottle) } }
         } label: {
             Image(systemName: "ellipsis.circle")
         }

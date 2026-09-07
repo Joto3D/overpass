@@ -57,15 +57,9 @@ struct ProgramsGridView: View {
                 }
 
                 if bottle.pins.isEmpty {
-                    emptyState(
-                        message: "No programs yet.",
-                        detail: "Drop an .exe here or use Run .exe\u{2026} — it will be pinned for next time."
-                    )
+                    emptyState("Drop an .exe here, or use Run .exe\u{2026}, to pin your first program.")
                 } else if filteredPins.isEmpty {
-                    emptyState(
-                        message: "No programs match \u{201c}\(searchText)\u{201d}.",
-                        detail: nil
-                    )
+                    emptyState("No programs match \u{201c}\(searchText)\u{201d}.")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
@@ -108,8 +102,8 @@ struct ProgramsGridView: View {
                     .textFieldStyle(.plain)
             }
             .padding(.horizontal, Theme.Spacing.s)
-            .padding(.vertical, 6)
             .frame(maxWidth: .infinity)
+            .frame(height: Theme.Metrics.toolbarControl)
             .overpassCard(cornerRadius: Theme.Radius.row)
 
             if isScanning {
@@ -121,6 +115,7 @@ struct ProgramsGridView: View {
                 Toggle("Show helper executables", isOn: $showHelpers)
             } label: {
                 Image(systemName: "line.3.horizontal.decrease.circle")
+                    .frame(width: Theme.Metrics.toolbarControl, height: Theme.Metrics.toolbarControl)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -137,20 +132,13 @@ struct ProgramsGridView: View {
         }
     }
 
-    private func emptyState(message: String, detail: String?) -> some View {
-        VStack(spacing: 4) {
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            if let detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, Theme.Spacing.xl * 2)
+    private func emptyState(_ message: String) -> some View {
+        Text(message)
+            .font(.system(size: 13))
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.top, Theme.Spacing.xl * 2)
     }
 
     // MARK: - Actions
@@ -278,14 +266,10 @@ private struct ProgramRow: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.m) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.regularMaterial)
-                Image(systemName: pin.isSystem ? "gearshape" : "app.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: 28, height: 28)
+            Image(systemName: pin.isSystem ? "gearshape" : "app.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
@@ -297,7 +281,7 @@ private struct ProgramRow: View {
                     }
                 }
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -311,14 +295,14 @@ private struct ProgramRow: View {
                         .font(.system(size: 11))
                         .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.quiet)
+                .buttonStyle(.borderless)
                 .controlSize(.small)
                 .fixedSize()
                 .help("Run")
             }
         }
         .padding(.horizontal, Theme.Spacing.m)
-        .padding(.vertical, Theme.Spacing.s)
+        .frame(height: Theme.Metrics.listRow)
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)

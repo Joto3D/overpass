@@ -1,10 +1,13 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Theme picker, a shortcut to the data folder, and a short About block.
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(ThemeStore.self) private var themeStore
+    @State private var isGeneratingReport = false
+    @State private var diagnosticsStatus: String?
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: Theme.Spacing.s)]
@@ -46,6 +49,33 @@ struct SettingsView: View {
                 .padding(Theme.Spacing.l)
                 .overpassCard()
 
+                VStack(alignment: .leading, spacing: Theme.Spacing.m) {
+                    SectionHeader(title: "Diagnostics", systemImage: "stethoscope")
+                    Text("A plain-text snapshot of your setup — versions, engines, bottles, and the tail of the most recent log — useful when something's not working and you want to compare notes or ask for help.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        if let diagnosticsStatus {
+                            Text(diagnosticsStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Save Report…") {
+                            saveReport()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isGeneratingReport)
+                        Button("Copy Report to Clipboard") {
+                            copyReport()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isGeneratingReport)
+                    }
+                }
+                .padding(Theme.Spacing.l)
+                .overpassCard()
+
                 VStack(alignment: .leading, spacing: Theme.Spacing.s) {
                     SectionHeader(title: "About", systemImage: "info.circle")
                     Text("Overpass \(appVersion)")
@@ -66,7 +96,7 @@ struct SettingsView: View {
                 .overpassCard()
             }
             .padding(Theme.Spacing.xl)
-            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: 760, alignment: .leading)
         }
     }
 
@@ -107,5 +137,48 @@ struct SettingsView: View {
             return "\(short) (\(build))"
         }
         return short
+    }
+
+    // MARK: - Diagnostics actions
+
+    private func copyReport() {
+        guard !isGeneratingReport else { return }
+        isGeneratingReport = true
+        diagnosticsStatus = "Generating report…"
+        Task {
+            let report = await Diagnostics.report()
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(report, forType: .string)
+            isGeneratingReport = false
+            diagnosticsStatus = "Copied to clipboard."
+        }
+    }
+
+    private func saveReport() {
+        guard !isGeneratingReport else { return }
+        isGeneratingReport = true
+        diagnosticsStatus = "Generating report…"
+        Task {
+            let report = await Diagnostics.report()
+            isGeneratingReport = false
+
+            let panel = NSSavePanel()
+            panel.title = "Save Diagnostics Report"
+            panel.nameFieldStringValue = "Overpass Diagnostics.txt"
+            panel.allowedContentTypes = [.plainText]
+            panel.canCreateDirectories = true
+
+            guard panel.runModal() == .OK, let url = panel.url else {
+                diagnosticsStatus = nil
+                return
+            }
+            do {
+                try report.write(to: url, atomically: true, encoding: .utf8)
+                diagnosticsStatus = "Saved to \(url.lastPathComponent)."
+            } catch {
+                diagnosticsStatus = "Couldn't save: \(error.localizedDescription)"
+            }
+        }
     }
 }

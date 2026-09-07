@@ -25,6 +25,11 @@ struct ExtrasView: View {
 
                 if let bottle, let engine {
                     dxvkSection(bottle: bottle, engine: engine)
+                    // The D3DMetal overlay section is intentionally not shown:
+                    // stock Wine Staging ignores WINEDLLPATH for builtin DLLs, so
+                    // Apple's D3DMetal libraries cannot be layered onto it the way
+                    // CrossOver does with its own patched Wine. See
+                    // Services/D3DMetalOverlay.swift for the full investigation.
                     winetricksSection(bottle: bottle, engine: engine)
                 } else {
                     ContentUnavailableView(
@@ -96,6 +101,56 @@ struct ExtrasView: View {
         } else {
             return "\(engine.kind.displayName) already includes Apple's D3DMetal, which translates DirectX 11/12 straight to Metal — DXVK isn't needed here."
         }
+    }
+
+    // MARK: - D3DMetal overlay
+
+    private func d3dMetalOverlaySection(bottle: Bottle, engine: InstalledEngine) -> some View {
+        let gptk = D3DMetalOverlay.sourceEngine(from: appState.installedEngines)
+
+        return VStack(alignment: .leading, spacing: Theme.Spacing.m) {
+            SectionHeader(title: "D3DMetal (Apple Game Porting Toolkit)", systemImage: "cpu")
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+                Toggle(isOn: Binding(
+                    get: { bottle.d3dMetalOverlay },
+                    set: { newValue in
+                        guard let gptk else { return }
+                        Task { await runner.setD3DMetalOverlay(newValue, bottle: bottle, gptk: gptk, appState: appState) }
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Layer D3DMetal onto this bottle")
+                            .font(Theme.headingFont(14))
+                        Text("Apple's DirectX 11/12 to Metal translation, layered onto modern Wine — the same approach CrossOver uses.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Experimental: on the current Wine Staging build, this Mac's Wine doesn't actually pick up the overlay's DLLs (see D3DMetalOverlay.swift for the investigation), so this currently has no real effect — safe to toggle, but don't expect a rendering change yet.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if gptk == nil {
+                            Text("Install the Game Porting Toolkit engine first — it's where the D3DMetal files come from.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .disabled(gptk == nil || runner.isBusy)
+
+                if runner.isBusy, runner.currentOperation == "D3DMetal" {
+                    HStack(spacing: Theme.Spacing.s) {
+                        ProgressView().controlSize(.small)
+                        Text(runner.statusLine ?? "Working…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(Theme.Spacing.l)
+        .overpassCard()
     }
 
     // MARK: - Winetricks
@@ -242,6 +297,12 @@ final class ExtrasRunner {
     /// failure the bottle is left untouched, so the toggle in
     /// `ExtrasView` (bound straight to `bottle.dxvk`) naturally snaps
     /// back to its prior state.
+    ///
+    /// DXVK and the D3DMetal overlay both replace the same DirectX DLLs
+    /// (`d3d11`, `dxgi`, ...), so they're mutually exclusive: turning DXVK
+    /// on first uninstalls the overlay (if present) and clears
+    /// `bottle.d3dMetalOverlay`, mirroring what `setD3DMetalOverlay` does
+    /// in the other direction.
     func setDXVK(_ enabled: Bool, bottle: Bottle, engine: InstalledEngine, appState: AppState) async {
         guard !isBusy else { return }
         isBusy = true
@@ -254,6 +315,10 @@ final class ExtrasRunner {
         }
 
         do {
+            if enabled, bottle.d3dMetalOverlay {
+                statusLine = "Turning off D3DMetal overlay…"
+                try D3DMetalOverlay.uninstall(from: bottle)
+            }
             if enabled {
                 try await DXVKInstaller.install(into: bottle) { [weak self] message in
                     Task { @MainActor in self?.statusLine = message }
@@ -263,9 +328,46 @@ final class ExtrasRunner {
             }
             var updated = bottle
             updated.dxvk = enabled
+            if enabled { updated.d3dMetalOverlay = false }
             appState.updateBottle(updated)
         } catch {
             appState.report(error, context: enabled ? "Installing DXVK" : "Removing DXVK")
+        }
+    }
+
+    /// Installs or removes the `D3DMetalOverlay`, then — only on success —
+    /// flips `bottle.d3dMetalOverlay` and persists it. Mutually exclusive
+    /// with DXVK for the same reason `setDXVK` turns this overlay off when
+    /// DXVK is enabled: both replace `d3d11`/`dxgi`/etc for the bottle.
+    func setD3DMetalOverlay(_ enabled: Bool, bottle: Bottle, gptk: InstalledEngine, appState: AppState) async {
+        guard !isBusy else { return }
+        isBusy = true
+        currentOperation = "D3DMetal"
+        statusLine = enabled ? "Installing D3DMetal overlay…" : "Removing D3DMetal overlay…"
+        defer {
+            isBusy = false
+            currentOperation = nil
+            statusLine = nil
+        }
+
+        do {
+            if enabled, bottle.dxvk {
+                statusLine = "Turning off DXVK…"
+                try DXVKInstaller.uninstall(from: bottle)
+            }
+            if enabled {
+                try D3DMetalOverlay.install(into: bottle, from: gptk) { [weak self] message in
+                    Task { @MainActor in self?.statusLine = message }
+                }
+            } else {
+                try D3DMetalOverlay.uninstall(from: bottle)
+            }
+            var updated = bottle
+            updated.d3dMetalOverlay = enabled
+            if enabled { updated.dxvk = false }
+            appState.updateBottle(updated)
+        } catch {
+            appState.report(error, context: enabled ? "Installing D3DMetal overlay" : "Removing D3DMetal overlay")
         }
     }
 

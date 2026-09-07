@@ -36,6 +36,22 @@ enum Theme {
         static let m: CGFloat = 12
         static let l: CGFloat = 16
         static let xl: CGFloat = 24
+
+        /// Screen/content outer padding per the shared design spec (20pt) —
+        /// distinct from `xl` (24pt), which stays available for larger
+        /// internal gaps. Also used as the gap below a tab picker before
+        /// its content ("16 above and 20 below" the picker).
+        static let outer: CGFloat = 20
+    }
+
+    enum Metrics {
+        /// Height shared by a toolbar's search field and its icon-only
+        /// buttons (filter, rescan, add) so a compact toolbar row reads as
+        /// one aligned strip instead of controls of mismatched heights.
+        static let toolbarControl: CGFloat = 28
+        /// Uniform row height for sidebar rows and program/game list rows.
+        static let row: CGFloat = 36
+        static let listRow: CGFloat = 44
     }
 
     enum Radius {
@@ -294,10 +310,10 @@ struct SectionHeader: View {
                     .foregroundStyle(.secondary)
             }
             Text(title)
-                .font(Theme.headingFont(13))
+                .font(Theme.headingFont(11))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
-                .tracking(0.4)
+                .tracking(0.6)
         }
         .padding(.bottom, 2)
         .overlay(alignment: .bottomLeading) {
