@@ -24,6 +24,7 @@ struct ProgramsGridView: View {
     @State private var editingArgs = ""
     @State private var selectedPinID: PinnedProgram.ID?
 
+    @AppStorage("overpass.programs.showAll") private var showAllPrograms = false
     @AppStorage("overpass.programs.showSystem") private var showSystem = false
     @AppStorage("overpass.programs.showHelpers") private var showHelpers = false
 
@@ -31,13 +32,13 @@ struct ProgramsGridView: View {
         appState.bottles.first { $0.id == bottleID }
     }
 
+    /// Shortcut-backed-by-default (CrossOver/Heroic-style): only
+    /// `.shortcut`/`.catalogApp`/`.user`-origin pins show unless "Show all
+    /// programs" is on. See `ProgramScanner.defaultVisiblePins` — it also
+    /// guarantees this never comes back empty while `bottle.pins` isn't.
     private var visiblePins: [PinnedProgram] {
         guard let bottle else { return [] }
-        return bottle.pins.filter { pin in
-            if pin.isSystem && !showSystem { return false }
-            if pin.isHelper && !showHelpers { return false }
-            return true
-        }
+        return ProgramScanner.defaultVisiblePins(bottle.pins, showSystem: showSystem, showHelpers: showHelpers, showAll: showAllPrograms)
     }
 
     private var filteredPins: [PinnedProgram] {
@@ -111,6 +112,8 @@ struct ProgramsGridView: View {
             }
 
             Menu {
+                Toggle("Show all programs", isOn: $showAllPrograms)
+                Divider()
                 Toggle("Show system programs", isOn: $showSystem)
                 Toggle("Show helper executables", isOn: $showHelpers)
             } label: {

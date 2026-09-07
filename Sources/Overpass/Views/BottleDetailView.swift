@@ -137,8 +137,7 @@ struct BottleDetailView: View {
                 // The one accent control on this screen — everything else
                 // beside it (Stop, the tools menu) stays quiet/bordered.
                 Button("Run .exe…") { pickAndRun(bottle) }
-                    .buttonStyle(.accent)
-                    .fixedSize()
+                    .buttonStyle(.accentCompact)
                 Button("Stop") {
                     Task { await appState.stopAll(in: bottle) }
                 }

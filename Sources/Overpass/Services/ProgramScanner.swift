@@ -22,8 +22,11 @@ enum ProgramScanner {
     /// `ProgramsGridView` compares the two and runs a background
     /// scan+merge on mismatch. Version 2 introduced case-insensitive/
     /// bitness-folded dedupe (`dedupeKey`) and catalog launch-arg
-    /// defaults (`applyCatalogDefaults`).
-    static let schemaVersion = 4
+    /// defaults (`applyCatalogDefaults`). Version 5 introduced
+    /// `PinnedProgram.origin` (shortcut-backed-by-default visibility) plus
+    /// the `/bin//redist/…` path-segment and conditional extended-fragment
+    /// helper demotions.
+    static let schemaVersion = 5
 
     /// Name fragments (case-insensitive substring match against the
     /// executable's base name) that mark a program as installer/updater/
@@ -35,6 +38,36 @@ enum ProgramScanner {
         "crash", "handler", "helper", "update", "updater", "report", "gup",
         "service", "daemon", "agent", "launcher-helper", "elevate", "cef",
         "webhelper", "overlay", "dbg", "debug", "console",
+    ]
+
+    /// Path segments (checked as a lower-cased substring, so any casing on
+    /// disk matches) that mark an exe as installer/driver/redistributable
+    /// scaffolding purely by *where* it lives, regardless of its name —
+    /// e.g. every binary under a Steam install's `bin/` folder
+    /// (`fossilize-replay.exe`, `vulkandriverquery64.exe`, …), which
+    /// `helperNameFragments` alone never catches since none of those names
+    /// look like installer scaffolding. Applied in `scanSync` to every
+    /// candidate that isn't itself a shortcut target (see
+    /// `isHelperPathSegment` callers) — belt-and-braces alongside the
+    /// shortcut-backed-by-default `PinnedProgram.origin` model: still
+    /// useful for a bottle with no shortcuts at all, or as a second layer
+    /// when `showAllPrograms` reveals `.discovered` pins.
+    private static let helperPathSegments = [
+        "/bin/", "/redist/", "/_commonredist/", "/drivers/", "/tools/", "/support/", "/dotnet/", "/directx/",
+    ]
+
+    /// Name fragments that only mark a candidate `isHelper` when something
+    /// *else* in the same top-level Program Files product folder is
+    /// shortcut-backed (see `topLevelProgramFilesFolder`) — unlike
+    /// `helperNameFragments`, which applies unconditionally. These
+    /// fragments are common enough in ordinary product names ("Launcher",
+    /// "Monitor") that demoting them outright would risk hiding a bottle's
+    /// only program; gating on "a real shortcut points somewhere else in
+    /// this same product" means they only fire for genuine sibling utility
+    /// binaries (Steam's `steam_monitor.exe`, `x64launcher.exe`, …), never
+    /// for the one program a bottle actually has.
+    private static let conditionalHelperNameFragments: Set<String> = [
+        "fossilize", "driverquery", "xboxutil", "monitor", "launcher",
     ]
 
     /// Trailing architecture markers stripped from derived display names
@@ -117,6 +150,7 @@ enum ProgramScanner {
                 kept.isSystem = fresh.isSystem
                 kept.isHelper = fresh.isHelper
                 kept.launchURL = fresh.launchURL
+                kept.origin = fresh.origin
                 return applyCatalogDefaults(to: kept)
             }
             return applyCatalogDefaults(to: fresh)
@@ -140,7 +174,14 @@ enum ProgramScanner {
         }
 
         merged.append(contentsOf: stillOnDisk.map(applyCatalogDefaults))
-        merged.append(contentsOf: userAdded)
+        // Routed through applyCatalogDefaults too — not for the name/args
+        // rewrite (a user-added pin already got that once, in
+        // `ProgramsGridView.addProgram`), but so a pin decoded from a
+        // `metadata.json` written before `origin` existed (`origin ==
+        // nil`) picks up `.user` and shows up under the default
+        // shortcut-backed filter instead of looking like scanner
+        // scaffolding forever.
+        merged.append(contentsOf: userAdded.map(applyCatalogDefaults))
         return merged.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
@@ -191,6 +232,22 @@ enum ProgramScanner {
     /// Apple Silicon. A no-op for a pin with existing (possibly
     /// user-edited) args, or a URL-target pin (`launchURL != nil`).
     static func applyCatalogDefaults(to pin: PinnedProgram) -> PinnedProgram {
+        var pin = pin
+
+        // Derive `origin` first, independent of whether the name/args get
+        // touched below: a user-added pin is always `.user`, and a
+        // catalog-hint match is `.catalogApp` unless a fresh scan already
+        // marked it `.shortcut` (a real Start Menu/Desktop shortcut is the
+        // stronger signal — never downgrade it).
+        if pin.isUserAdded {
+            if pin.origin == nil { pin.origin = .user }
+        } else if pin.origin != .shortcut {
+            let lowerPath = pin.exePath.lowercased()
+            if AppCatalog.apps.contains(where: { app in app.launchExeHints.contains { lowerPath.hasSuffix($0.lowercased()) } }) {
+                pin.origin = .catalogApp
+            }
+        }
+
         // Empty args, or args equal to an older catalog default, get the
         // current catalog default (e.g. Steam's flags gained GPU-disable
         // switches after steamwebhelper hung with the original set).
@@ -200,10 +257,79 @@ enum ProgramScanner {
         guard let app = AppCatalog.apps.first(where: { app in
             app.launchExeHints.contains { lowerPath.hasSuffix($0.lowercased()) }
         }) else { return pin }
-        var updated = pin
-        updated.name = app.name
-        updated.args = app.launchArgs
-        return updated
+        pin.name = app.name
+        pin.args = app.launchArgs
+        return pin
+    }
+
+    // MARK: - Default visibility (CrossOver/Heroic-style: shortcut-backed
+    // programs by default, everything else opt-in)
+
+    /// Filters `pins` down to what a bottle's Programs list shows by
+    /// default: `.shortcut`/`.catalogApp`/`.user`-origin pins (plus
+    /// `isSystem`/`isHelper` ones when the caller has opted into those),
+    /// with `.discovered` (and `nil`-origin, pre-migration) pins hidden
+    /// unless `showAll` is set. Falls back to `fallbackVisiblePins` when
+    /// that filtering would leave the list empty despite `pins` being
+    /// non-empty — a bottle with something installed should never look
+    /// empty just because nothing happened to be shortcut- or
+    /// catalog-backed.
+    static func defaultVisiblePins(_ pins: [PinnedProgram], showSystem: Bool = false, showHelpers: Bool = false, showAll: Bool = false) -> [PinnedProgram] {
+        let filtered = pins.filter { pin in
+            if pin.isSystem, !showSystem { return false }
+            if pin.isHelper, !showHelpers { return false }
+            if !showAll {
+                guard let origin = pin.origin else { return false }
+                switch origin {
+                case .shortcut, .catalogApp, .user: break
+                case .discovered: return false
+                }
+            }
+            return true
+        }
+        guard filtered.isEmpty, !pins.isEmpty else { return filtered }
+        return fallbackVisiblePins(pins)
+    }
+
+    /// Last-resort visibility when normal filtering would hide every pin
+    /// in a non-empty bottle: picks the largest (by on-disk file size)
+    /// non-helper exe per top-level Program Files product folder (see
+    /// `topLevelProgramFilesFolder`) — e.g. a shortcut-less bottle whose
+    /// only real content is one unpinned game folder still shows that
+    /// game instead of an empty list. Skips URL-target pins (no exe on
+    /// disk to size) and anything already flagged `isHelper`.
+    static func fallbackVisiblePins(_ pins: [PinnedProgram]) -> [PinnedProgram] {
+        let fm = FileManager.default
+        var bestByFolder: [String: (pin: PinnedProgram, size: Int)] = [:]
+        for pin in pins {
+            guard pin.launchURL == nil, !pin.isHelper else { continue }
+            guard let folder = topLevelProgramFilesFolder(pin.exePath) else { continue }
+            let size = (try? fm.attributesOfItem(atPath: pin.exePath))?[.size] as? Int ?? 0
+            if let existing = bestByFolder[folder] {
+                if size > existing.size { bestByFolder[folder] = (pin, size) }
+            } else {
+                bestByFolder[folder] = (pin, size)
+            }
+        }
+        return bestByFolder.values.map(\.pin).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// The folder name directly under a `Program Files`/`Program Files
+    /// (x86)` path component (e.g. `.../Program Files (x86)/Steam/bin/
+    /// x64launcher.exe` -> `"steam"`, lower-cased) — used to group a
+    /// product's files together regardless of bitness tree or nesting
+    /// depth, for both `fallbackVisiblePins` and the conditional
+    /// extended-fragment helper demotion in `scanSync`. `nil` if `path`
+    /// doesn't contain either folder.
+    private static func topLevelProgramFilesFolder(_ path: String) -> String? {
+        let components = path.components(separatedBy: "/")
+        for (index, component) in components.enumerated() {
+            let lower = component.lowercased()
+            guard lower == "program files" || lower == "program files (x86)" else { continue }
+            guard index + 1 < components.count else { return nil }
+            return components[index + 1].lowercased()
+        }
+        return nil
     }
 
     /// Derives a display name from an exe's base filename (no extension):
@@ -390,7 +516,14 @@ enum ProgramScanner {
         var isSystemByKey: [String: Bool] = [:]
         for (key, candidate) in exeCandidates {
             let baseName = URL(fileURLWithPath: candidate.realPath).deletingPathExtension().lastPathComponent
-            isHelperByKey[key] = isHelperName(baseName)
+            // The path-segment check (bin/redist/drivers/… scaffolding
+            // folders) never applies to a candidate that's itself a
+            // shortcut target — some legitimate installs do put their
+            // real launcher in a "bin" subfolder, and a shortcut pointing
+            // there is the strongest possible signal it's the actual
+            // program, not helper scaffolding.
+            let pathFlagsHelper = !candidate.fromLnk && isHelperPathSegment(candidate.realPath)
+            isHelperByKey[key] = isHelperName(baseName) || pathFlagsHelper
             isSystemByKey[key] = isSystemPath(candidate.realPath, driveC: driveC) || candidate.forceSystem
         }
 
@@ -404,6 +537,24 @@ enum ProgramScanner {
             if let targets = lnkTargetDirs[parent], !targets.contains(key) {
                 isHelperByKey[key] = true
             }
+        }
+
+        // 4b. Conditional extended-fragment demotion: a name in
+        // `conditionalHelperNameFragments` only marks a candidate helper
+        // when something else in the same top-level Program Files product
+        // folder is shortcut-backed — see that constant's doc comment.
+        // Never applied to a shortcut target itself.
+        var shortcutBackedTopFolders = Set<String>()
+        for (_, candidate) in exeCandidates where candidate.fromLnk {
+            if let folder = topLevelProgramFilesFolder(candidate.realPath) {
+                shortcutBackedTopFolders.insert(folder)
+            }
+        }
+        for (key, candidate) in exeCandidates where !candidate.fromLnk && isHelperByKey[key] != true {
+            let baseName = URL(fileURLWithPath: candidate.realPath).deletingPathExtension().lastPathComponent.lowercased()
+            guard conditionalHelperNameFragments.contains(where: { baseName.contains($0) }) else { continue }
+            guard let folder = topLevelProgramFilesFolder(candidate.realPath), shortcutBackedTopFolders.contains(folder) else { continue }
+            isHelperByKey[key] = true
         }
 
         // 5. Names: prefer the .lnk's own filename; otherwise, if this
@@ -450,7 +601,8 @@ enum ProgramScanner {
                 isUserAdded: false,
                 isSystem: isSystem,
                 isHelper: isHelper,
-                launchURL: nil
+                launchURL: nil,
+                origin: candidate.fromLnk ? .shortcut : .discovered
             ))
         }
 
@@ -462,7 +614,8 @@ enum ProgramScanner {
                 isUserAdded: false,
                 isSystem: false,
                 isHelper: false,
-                launchURL: entry.url
+                launchURL: entry.url,
+                origin: .shortcut
             ))
         }
 
@@ -532,6 +685,13 @@ enum ProgramScanner {
     private static func isHelperName(_ name: String) -> Bool {
         let lower = name.lowercased()
         return helperNameFragments.contains { lower.contains($0) }
+    }
+
+    /// True when `path` runs through one of `helperPathSegments`
+    /// (`/bin/`, `/redist/`, …) — case-insensitive.
+    private static func isHelperPathSegment(_ path: String) -> Bool {
+        let lower = path.lowercased()
+        return helperPathSegments.contains { lower.contains($0) }
     }
 
     /// `path` relative to `driveC`, lower-cased, forward-slash separated,

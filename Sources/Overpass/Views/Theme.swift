@@ -421,13 +421,20 @@ struct AuroraButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(ThemeStore.self) private var themeStore
     var verticalPadding: CGFloat = 14
+    /// Full-width by default (sheets, wizards). Toolbar-sized buttons pass
+    /// `false` so the label keeps its own width plus breathing room instead
+    /// of being clipped against the gradient's edges.
+    var fillsWidth: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Theme.headingFont(15))
             .foregroundStyle(.white)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.vertical, verticalPadding)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Theme.Spacing.l)
+            .frame(maxWidth: fillsWidth ? .infinity : nil)
             .background {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                     .fill(themeStore.current.accentButtonFill)
@@ -440,6 +447,8 @@ struct AuroraButtonStyle: ButtonStyle {
 
 extension ButtonStyle where Self == AuroraButtonStyle {
     static var aurora: AuroraButtonStyle { AuroraButtonStyle() }
+    /// Accent button sized to its label — for toolbars and headers.
+    static var accentCompact: AuroraButtonStyle { AuroraButtonStyle(verticalPadding: 8, fillsWidth: false) }
 }
 
 /// Overpass-flavored alias for `AuroraButtonStyle` — prefer this name (and

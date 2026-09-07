@@ -34,6 +34,8 @@ enum DebugSelfTest {
         testProgramScannerMerge(root: root)
         testProgramScannerMigrationDedupe(root: root)
         testProgramScannerCatalogDefaultsAndNaming()
+        testProgramScannerShortcutBackedDefaultVisibility()
+        testProgramScannerFallbackNeverEmpty()
         testWineRunnerEnvironment(root: root)
         testWineRunnerSplitArguments()
         testD3DMetalOverlay(root: root)
@@ -408,6 +410,139 @@ enum DebugSelfTest {
         check(
             "derivedPinName leaves an already mixed-case name's casing alone",
             ProgramScanner.derivedPinName(fromBaseName: "SteamService") == "SteamService"
+        )
+    }
+
+    // MARK: - ProgramScanner: shortcut-backed-by-default visibility
+
+    /// Reproduces the real-world bug this feature exists to fix: a Steam
+    /// bottle whose `bin/` folder (`fossilize-replay.exe`,
+    /// `vulkandriverquery64.exe`, `x64launcher.exe`, …) sits in a
+    /// *different* folder from the Start Menu shortcut's target
+    /// (`Steam/steam.exe`), so the old same-folder "sibling" helper rule
+    /// never caught them — a real bottle ended up with 14 of 34 pins
+    /// visible, 13 of them Steam's own internal binaries. Builds the exact
+    /// layout (`Steam/steam.exe` + a Start Menu `.lnk` to it + all 13
+    /// `Steam/bin/*.exe`) and asserts the default-visible set — what
+    /// `ProgramsGridView` shows with every filter off — is exactly
+    /// `["Steam"]`.
+    private static func testProgramScannerShortcutBackedDefaultVisibility() {
+        let fm = FileManager.default
+        let bottle = Bottle(name: "selftest-steam-shape", engineID: "gptk-3.0-3")
+        let driveC = bottle.driveC
+        defer { try? fm.removeItem(at: bottle.prefixDir) }
+
+        let steamDir = driveC.appendingPathComponent("Program Files (x86)/Steam", isDirectory: true)
+        let binDir = steamDir.appendingPathComponent("bin", isDirectory: true)
+        try? fm.createDirectory(at: binDir, withIntermediateDirectories: true)
+        try? Data([0xAA]).write(to: steamDir.appendingPathComponent("steam.exe"))
+
+        // The exact 13 Steam/bin binaries from the real bottle that
+        // motivated this fix.
+        let binNames = [
+            "drivers", "fossilize-replay", "fossilize-replay64", "gldriverquery", "gldriverquery64",
+            "secure_desktop_capture", "steam_monitor", "steamxboxutil", "steamxboxutil64",
+            "vulkandriverquery", "vulkandriverquery64", "x64launcher", "x86launcher",
+        ]
+        for name in binNames {
+            try? Data().write(to: binDir.appendingPathComponent("\(name).exe"))
+        }
+
+        let startMenuDir = driveC.appendingPathComponent(
+            "ProgramData/Microsoft/Windows/Start Menu/Programs", isDirectory: true
+        )
+        try? fm.createDirectory(at: startMenuDir, withIntermediateDirectories: true)
+        let lnkData = buildLnk(target: #"C:\Program Files (x86)\Steam\steam.exe"#, arguments: "")
+        try? lnkData.write(to: startMenuDir.appendingPathComponent("Steam.lnk"))
+
+        let scanned = runSync { await ProgramScanner.scan(bottle: bottle) }
+        let merged = ProgramScanner.merge(scanned: scanned, existing: [])
+        check(
+            "Steam-shape scan produces exactly 14 pins (steam.exe + 13 Steam/bin exes)",
+            merged.count == 14,
+            "got \(merged.count): \(merged.map(\.name).sorted())"
+        )
+
+        let steamPin = merged.first { $0.name == "Steam" }
+        check("Steam.exe pin has origin .shortcut", steamPin?.origin == .shortcut, "got \(String(describing: steamPin?.origin))")
+
+        let binPins = merged.filter { $0.exePath.lowercased().contains("/steam/bin/") }
+        check(
+            "every Steam/bin/*.exe pin is flagged isHelper (path-segment rule)",
+            binPins.count == 13 && binPins.allSatisfy(\.isHelper),
+            "got \(binPins.count) bin pins, non-helper: \(binPins.filter { !$0.isHelper }.map(\.name))"
+        )
+
+        let visible = ProgramScanner.defaultVisiblePins(merged)
+        check(
+            "Steam-shape default-visible set is exactly [\"Steam\"]",
+            Set(visible.map(\.name)) == ["Steam"],
+            "got \(visible.map(\.name).sorted())"
+        )
+
+        // "Show helper executables" alone does nothing here: every
+        // Steam/bin/*.exe pin is also `.discovered`-origin, and the
+        // toolbar's system/helper toggles are nested *under* "Show all
+        // programs" (refinements of the broadened set, not independent
+        // overrides of the origin filter) — so revealing them needs both.
+        let helpersOnly = ProgramScanner.defaultVisiblePins(merged, showHelpers: true)
+        check(
+            "Show helper executables alone (Show all off) still hides .discovered helpers",
+            helpersOnly.count == 1,
+            "got \(helpersOnly.count)"
+        )
+        let allPlusHelpers = ProgramScanner.defaultVisiblePins(merged, showHelpers: true, showAll: true)
+        check(
+            "Show all programs + Show helper executables reveals every Steam/bin/*.exe pin",
+            allPlusHelpers.count == 14,
+            "got \(allPlusHelpers.count)"
+        )
+    }
+
+    /// A bottle with real installed content but no shortcuts anywhere
+    /// (every exe is `.discovered`) must never present an empty Programs
+    /// list — `ProgramScanner.fallbackVisiblePins` picks the largest
+    /// non-helper exe per top-level Program Files folder as a stand-in.
+    private static func testProgramScannerFallbackNeverEmpty() {
+        let fm = FileManager.default
+        let bottle = Bottle(name: "selftest-no-shortcuts", engineID: "gptk-3.0-3")
+        let driveC = bottle.driveC
+        defer { try? fm.removeItem(at: bottle.prefixDir) }
+
+        let gameDir = driveC.appendingPathComponent("Program Files/SomeGame", isDirectory: true)
+        try? fm.createDirectory(at: gameDir, withIntermediateDirectories: true)
+        // The real game binary is the larger of the two — no .lnk targets
+        // either, so both would be `.discovered` and hidden by default.
+        try? Data(repeating: 0x01, count: 20_000).write(to: gameDir.appendingPathComponent("SomeGame.exe"))
+        try? Data(repeating: 0x01, count: 200).write(to: gameDir.appendingPathComponent("crashpad_handler.exe"))
+
+        let scanned = runSync { await ProgramScanner.scan(bottle: bottle) }
+        let merged = ProgramScanner.merge(scanned: scanned, existing: [])
+        check(
+            "no-shortcut fixture: both exes are .discovered",
+            merged.allSatisfy { $0.origin == .discovered },
+            "got \(merged.map { ($0.name, $0.origin) })"
+        )
+
+        let normallyEmpty = merged.filter { pin in
+            guard let origin = pin.origin else { return false }
+            switch origin {
+            case .shortcut, .catalogApp, .user: return true
+            case .discovered: return false
+            }
+        }
+        check("no-shortcut fixture: plain origin filtering would be empty", normallyEmpty.isEmpty)
+
+        let visible = ProgramScanner.defaultVisiblePins(merged)
+        check(
+            "fallback keeps the Programs list non-empty when a shortcut-less bottle still has real content",
+            !visible.isEmpty,
+            "got empty list despite \(merged.count) pins on disk"
+        )
+        check(
+            "fallback picks the larger exe (the real game, not the helper)",
+            visible.map(\.name) == ["SomeGame"],
+            "got \(visible.map(\.name))"
         )
     }
 

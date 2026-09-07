@@ -3,6 +3,32 @@ import Foundation
 /// A launchable program inside a bottle, either discovered by
 /// `ProgramScanner` or added by the user.
 struct PinnedProgram: Identifiable, Codable, Hashable, Sendable {
+    /// How this pin came to exist — drives default visibility in
+    /// `ProgramsGridView` (CrossOver/Heroic-style: a bottle's Programs list
+    /// defaults to showing only what a Windows Start Menu would list, plus
+    /// anything the app itself knows about or the user asked for). `nil`
+    /// on a pin decoded from a `metadata.json` written before this field
+    /// existed; treated the same as `.discovered` for visibility until the
+    /// next rescan re-derives it (see `ProgramScanner.merge`).
+    enum Origin: String, Codable, Sendable {
+        /// A Start Menu or Desktop `.lnk`/`.url` shortcut points at this
+        /// program (or, for a URL-target pin, is where the URL came from).
+        case shortcut
+        /// No shortcut backs it, but its path matches one of
+        /// `AppCatalog`'s `launchExeHints` (Steam, 7-Zip, …) — either
+        /// because `AppInstaller` just installed it, or because a scan
+        /// simply found it already on disk.
+        case catalogApp
+        /// The user added it explicitly ("Add program…"), or ran it once
+        /// and it got pinned on the fly. Mirrors `isUserAdded`.
+        case user
+        /// Found by walking Program Files with nothing else vouching for
+        /// it: no shortcut, no catalog match, not user-added. Hidden by
+        /// default so a Programs list doesn't drown in installer
+        /// scaffolding and helper binaries a Start Menu would never show.
+        case discovered
+    }
+
     var id: UUID
     var name: String
     /// Absolute macOS path to the .exe inside drive_c (not a Windows path),
@@ -32,6 +58,10 @@ struct PinnedProgram: Identifiable, Codable, Hashable, Sendable {
     /// the raw URL to hand to `wine start <url>`. `nil` for ordinary
     /// exe-backed pins, where `exePath` is the thing to launch.
     var launchURL: String?
+    /// See `Origin`. Optional/defaulted so a pre-existing `metadata.json`
+    /// keeps decoding; `ProgramScanner` derives it for every pin on the
+    /// next rescan (see `ProgramsGridView.migrateIfNeeded`).
+    var origin: Origin?
 
     init(
         id: UUID = UUID(),
@@ -41,7 +71,8 @@ struct PinnedProgram: Identifiable, Codable, Hashable, Sendable {
         isUserAdded: Bool = false,
         isSystem: Bool = false,
         isHelper: Bool = false,
-        launchURL: String? = nil
+        launchURL: String? = nil,
+        origin: Origin? = nil
     ) {
         self.id = id
         self.name = name
@@ -51,13 +82,15 @@ struct PinnedProgram: Identifiable, Codable, Hashable, Sendable {
         self.isSystem = isSystem
         self.isHelper = isHelper
         self.launchURL = launchURL
+        self.origin = origin
     }
 
     // Custom decoding so that `metadata.json` files written before
-    // `isSystem`/`isHelper`/`launchURL` existed still decode: missing keys
-    // default to `false`/`false`/`nil` instead of failing the decode.
-    // (`encode(to:)` is left to the compiler-synthesized Encodable
-    // conformance, which covers all stored properties as normal.)
+    // `isSystem`/`isHelper`/`launchURL`/`origin` existed still decode:
+    // missing keys default to `false`/`false`/`nil`/`nil` instead of
+    // failing the decode. (`encode(to:)` is left to the
+    // compiler-synthesized Encodable conformance, which covers all stored
+    // properties as normal.)
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -68,5 +101,6 @@ struct PinnedProgram: Identifiable, Codable, Hashable, Sendable {
         isSystem = try container.decodeIfPresent(Bool.self, forKey: .isSystem) ?? false
         isHelper = try container.decodeIfPresent(Bool.self, forKey: .isHelper) ?? false
         launchURL = try container.decodeIfPresent(String.self, forKey: .launchURL)
+        origin = try container.decodeIfPresent(Origin.self, forKey: .origin)
     }
 }

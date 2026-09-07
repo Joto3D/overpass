@@ -2,10 +2,11 @@ import SwiftUI
 import AppKit
 
 /// A bottle's "Games" tab: installed titles discovered by `GameLibrary.scan`
-/// across Steam/GOG Galaxy/Epic, styled to match `ProgramsGridView`'s rows
-/// so the two tabs read as one family — full-width rows, a roundel, a
-/// hover-only play button, double-click to launch, and a matching
-/// search/rescan toolbar.
+/// across Steam/GOG Galaxy/Epic, presented as a Heroic/CrossOver-style
+/// library — a grid of portrait cover cards by default, with a List mode
+/// (the original full-width-row layout) a click away via the toolbar's
+/// segmented control. The chosen mode is remembered per-machine via
+/// `@AppStorage`.
 ///
 /// `BottleDetailView` only shows this tab once a scan has found at least
 /// one game; this view itself re-scans on its own `.task(id:)` (and via
@@ -20,6 +21,8 @@ struct GamesView: View {
     @State private var hasScannedOnce = false
     @State private var searchText = ""
     @State private var storeFilter: Store?
+
+    @AppStorage("overpass.games.viewMode") private var viewMode: GamesViewMode = .grid
 
     private var bottle: Bottle? {
         appState.bottles.first { $0.id == bottleID }
@@ -50,6 +53,17 @@ struct GamesView: View {
                     emptyState("No games found — install one through Steam, GOG Galaxy or Epic in this bottle.")
                 } else if filteredGames.isEmpty {
                     emptyState("No games match \u{201c}\(searchText)\u{201d}.")
+                } else if viewMode == .grid {
+                    ScrollView {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.Spacing.l)],
+                            spacing: Theme.Spacing.l
+                        ) {
+                            ForEach(filteredGames) { game in
+                                GameCard(game: game, bottle: bottle)
+                            }
+                        }
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
@@ -114,6 +128,14 @@ struct GamesView: View {
                 .help("Filter by store")
             }
 
+            Picker("View mode", selection: $viewMode) {
+                Image(systemName: "square.grid.2x2").tag(GamesViewMode.grid)
+                Image(systemName: "list.bullet").tag(GamesViewMode.list)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 76, height: Theme.Metrics.toolbarControl)
+
             IconToolbarButton(systemImage: "arrow.clockwise", help: "Rescan") {
                 Task { await rescan(bottle) }
             }
@@ -142,7 +164,137 @@ struct GamesView: View {
     }
 }
 
-// MARK: - Game row
+/// Grid vs. list, remembered via `@AppStorage("overpass.games.viewMode")`.
+enum GamesViewMode: String {
+    case grid, list
+}
+
+// MARK: - Game card (grid mode)
+
+/// One Heroic-style library card: a 2:3 portrait cover (real Steam art when
+/// available, otherwise a generated monogram placeholder), the game's name
+/// below in up to two lines, and a muted store/size line. Hovering raises
+/// the card slightly and reveals a centered play button; double-clicking
+/// the card (or the play button itself) launches the game.
+private struct GameCard: View {
+    @Environment(AppState.self) private var appState
+    @Environment(ThemeStore.self) private var themeStore
+    let game: InstalledGame
+    let bottle: Bottle
+    @State private var image: NSImage?
+    @State private var isHovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            cover
+                .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                }
+                .overlay {
+                    if isHovering {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                                .fill(Color.black.opacity(0.28))
+                            Button(action: play) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 42, height: 42)
+                                    .background(Circle().fill(themeStore.current.accentGradient))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(game.launchExe == nil)
+                            .help("Play")
+                        }
+                    }
+                }
+                .shadow(color: .black.opacity(isHovering ? 0.32 : 0.14), radius: isHovering ? 10 : 4, y: isHovering ? 5 : 2)
+                .scaleEffect(isHovering ? 1.035 : 1)
+                .animation(Theme.settle, value: isHovering)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(game.name)
+                    .font(.system(size: 13))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(game.subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { play() }
+        .onHover { isHovering = $0 }
+        .task(id: game.id) { await loadArt() }
+        .contextMenu {
+            Button("Play") { play() }
+                .disabled(game.launchExe == nil)
+            Button("Reveal Install Folder in Finder") { reveal() }
+                .disabled(revealTarget == nil)
+            Button("Copy Launch Command") { copyLaunchCommand() }
+                .disabled(game.launchExe == nil)
+        }
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+        } else {
+            placeholder
+        }
+    }
+
+    /// Shown while art is still loading and permanently for any game with
+    /// no downloadable/local art — a monogram over the current theme's
+    /// accent gradient, styled to look deliberate rather than broken.
+    private var placeholder: some View {
+        ZStack {
+            themeStore.current.accentGradient
+            Text(PlaceholderArt.monogram(for: game.name))
+                .font(Theme.titleFont(26, weight: .bold))
+                .foregroundStyle(.white.opacity(0.92))
+        }
+    }
+
+    private func loadArt() async {
+        guard let data = await GameArtwork.shared.art(for: game), let nsImage = NSImage(data: data) else { return }
+        image = nsImage
+    }
+
+    private func play() {
+        guard let launchExe = game.launchExe else { return }
+        Task { await appState.run(exe: launchExe, args: game.launchArgs, in: bottle) }
+    }
+
+    private var revealTarget: URL? {
+        game.installDir ?? game.launchExe
+    }
+
+    private func reveal() {
+        guard let revealTarget else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([revealTarget])
+    }
+
+    private func copyLaunchCommand() {
+        guard let launchExe = game.launchExe else { return }
+        let command = game.launchArgs.isEmpty ? launchExe.path : "\(launchExe.path) \(game.launchArgs)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+    }
+}
+
+// MARK: - Game row (list mode)
 
 private struct GameRow: View {
     @Environment(AppState.self) private var appState
