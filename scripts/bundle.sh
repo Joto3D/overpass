@@ -1,6 +1,15 @@
 #!/bin/bash
-# Builds Overpass in release mode and assembles it into a proper macOS
-# .app bundle under build/Overpass.app, then ad-hoc codesigns it.
+# Builds Overpass in release mode, assembles it into a proper macOS .app
+# bundle, ad-hoc codesigns it, and installs it to ~/Applications.
+#
+# It installs by default on purpose. For most of 29 October 2026 this
+# script only wrote build/Overpass.app and stopped there, so the copy in
+# ~/Applications stayed hours out of date while work continued, and every
+# run also left a second bundle that Finder and Spotlight list as another
+# application. Both of those were the same missing step.
+#
+# Pass --no-install to build without installing. Set OVERPASS_INSTALL_DIR
+# to install somewhere other than ~/Applications.
 #
 # No Xcode is required (or used) — this is plain `swift build` plus
 # manual bundle assembly, since this machine only has the Command Line
@@ -10,6 +19,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+DO_INSTALL=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-install) DO_INSTALL=0 ;;
+        *) echo "unknown option: $arg (expected --no-install)" >&2; exit 2 ;;
+    esac
+done
 
 APP_NAME="Overpass"
 BUILD_DIR="$ROOT_DIR/build"
@@ -113,4 +130,35 @@ fi
 echo "==> Ad-hoc codesigning $APP_NAME.app"
 codesign --force -s - "$APP_BUNDLE"
 
-echo "==> Done: $APP_BUNDLE"
+if [ "$DO_INSTALL" -eq 0 ]; then
+    echo "==> Done (not installed): $APP_BUNDLE"
+    exit 0
+fi
+
+INSTALL_DIR="${OVERPASS_INSTALL_DIR:-$HOME/Applications}"
+INSTALLED="$INSTALL_DIR/$APP_NAME.app"
+mkdir -p "$INSTALL_DIR"
+
+# Replacing a running app does not disturb the running copy — it keeps the
+# old bundle open by inode — so it carries on working while no longer being
+# what is on disk. That is precisely how a stale build goes unnoticed, so
+# say it out loud rather than failing or silently quitting the user's app.
+if pgrep -f "$INSTALLED/Contents/MacOS/$APP_NAME" >/dev/null 2>&1; then
+    echo "    note: $APP_NAME is running — quit and reopen it to pick up this build"
+fi
+
+echo "==> Installing to $INSTALLED"
+# Stage beside the target and swap, rather than deleting first. An
+# interrupted copy then costs a rebuild, not the user's installed app.
+STAGE="$INSTALL_DIR/.$APP_NAME.app.incoming"
+rm -rf "$STAGE"
+cp -R "$APP_BUNDLE" "$STAGE"
+rm -rf "$INSTALLED"
+mv "$STAGE" "$INSTALLED"
+
+# Leave no second bundle behind: a copy under build/ gets listed as its own
+# application next to the real one, which is the duplicate this script used
+# to create on every run. build/ itself stays, with its Spotlight marker.
+rm -rf "$APP_BUNDLE"
+
+echo "==> Installed: $INSTALLED"
