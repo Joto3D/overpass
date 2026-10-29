@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overpass</title>
+<meta name="description" content="A native macOS app that runs Windows .exe files through Wine on Apple Silicon, with a Proton-style per-game fix database.">
+<style>
+  :root {
+    --bg:        #faf9f7;
+    --surface:   #ffffff;
+    --surface-2: #f2f0ec;
+    --line:      #e0ddd6;
+    --text:      #1b1e26;
+    --muted:     #5c6270;
+    --accent:    #a8620c;
+    --accent-dim:#f3e3cd;
+    --teal:      #2b6f62;
+    --warn:      #8a4b12;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        #101218;
+      --surface:   #171a22;
+      --surface-2: #1e222c;
+      --line:      #2b303c;
+      --text:      #e7e9f0;
+      --muted:     #99a0b2;
+      --accent:    #e9a948;
+      --accent-dim:#2a2317;
+      --teal:      #67baa7;
+      --warn:      #d79a5c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#101218; --surface:#171a22; --surface-2:#1e222c; --line:#2b303c;
+    --text:#e7e9f0; --muted:#99a0b2; --accent:#e9a948; --accent-dim:#2a2317;
+    --teal:#67baa7; --warn:#d79a5c;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.65;
+    font-size: 17px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+  code, kbd { font-family: var(--mono); font-size: .88em; }
+  :not(pre) > code {
+    background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: .1em .35em;
+  }
+  pre {
+    background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+    font-family: var(--mono); font-size: 14px; line-height: 1.55;
+  }
+  h1, h2, h3 { line-height: 1.25; letter-spacing: -0.015em; }
+  h2 {
+    font-size: 1.5rem; margin: 3rem 0 1rem;
+    padding-top: 1.75rem; border-top: 1px solid var(--line);
+  }
+  h3 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+  p { margin: 1rem 0; }
+
+  /* ---- hero ---- */
+  header.hero { padding: 4.5rem 0 1rem; }
+  .mark {
+    display: inline-flex; align-items: center; gap: .6rem;
+    font-family: var(--mono); font-size: .8rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 1.1rem;
+  }
+  .mark .bars { display: inline-flex; gap: 3px; }
+  .mark .bars i {
+    display: block; width: 3px; height: 13px; border-radius: 2px;
+    background: var(--accent); opacity: .35;
+  }
+  .mark .bars i:nth-child(2) { opacity: .6; height: 17px; }
+  .mark .bars i:nth-child(3) { opacity: 1;  height: 21px; }
+  h1 { font-size: clamp(2.6rem, 8vw, 3.9rem); margin: 0 0 .6rem; font-weight: 680; }
+  .tagline { font-size: clamp(1.05rem, 3.4vw, 1.3rem); color: var(--muted); margin: 0 0 1.6rem; max-width: 46ch; }
+  .badges { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: 1.8rem; }
+  .badge {
+    font-family: var(--mono); font-size: .74rem; letter-spacing: .03em;
+    border: 1px solid var(--line); background: var(--surface);
+    border-radius: 999px; padding: .28rem .7rem; color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge.hi { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+  .cta { display: flex; flex-wrap: wrap; gap: .6rem; }
+  .btn {
+    display: inline-block; border-radius: 9px; padding: .62rem 1.15rem;
+    font-weight: 560; font-size: .95rem; text-decoration: none; border: 1px solid var(--line);
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { background: var(--surface); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent); }
+
+  /* ---- cards ---- */
+  .grid { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 1.05rem 1.15rem;
+  }
+  .card h3 { margin: 0 0 .35rem; font-size: 1rem; }
+  .card p { margin: 0; font-size: .92rem; color: var(--muted); }
+
+  /* ---- tables ---- */
+  .tablewrap { overflow-x: auto; margin: 1.2rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; min-width: 480px; }
+  th, td { text-align: left; padding: .6rem .7rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .pill {
+    font-family: var(--mono); font-size: .76rem; border-radius: 5px;
+    padding: .12rem .45rem; border: 1px solid currentColor; white-space: nowrap;
+  }
+  .pill.no   { color: var(--warn); }
+  .pill.deg  { color: var(--accent); }
+  .pill.info { color: var(--teal); }
+
+  /* ---- callout ---- */
+  .note {
+    border-left: 3px solid var(--accent); background: var(--surface);
+    border-radius: 0 10px 10px 0; padding: .9rem 1.1rem; margin: 1.3rem 0;
+  }
+  .note p { margin: .4rem 0; }
+  .note p:first-child { margin-top: 0; }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { color: var(--accent); }
+
+  footer {
+    margin-top: 4rem; border-top: 1px solid var(--line);
+    padding: 2rem 0 3.5rem; color: var(--muted); font-size: .9rem;
+  }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="mark"><span class="bars"><i></i><i></i><i></i></span> Wine launcher for Apple&nbsp;Silicon</div>
+    <h1>Overpass</h1>
+    <p class="tagline">Runs Windows programs on macOS — and keeps a Proton-style database of what actually works.</p>
+    <div class="badges">
+      <span class="badge hi">GPL-3.0 code</span>
+      <span class="badge hi">CC0 fix data</span>
+      <span class="badge">Apple Silicon</span>
+      <span class="badge">SwiftUI</span>
+      <span class="badge">No telemetry</span>
+    </div>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/Joto3D/overpass">View on GitHub</a>
+      <a class="btn ghost" href="#build">Build from source</a>
+      <a class="btn ghost" href="#status">Honest status</a>
+    </div>
+  </header>
+
+  <p>Overpass is a native macOS app that runs Windows <code>.exe</code> files through Wine — a
+  Whisky/CrossOver-style launcher built for people who want an open, self-hosted option now that
+  Whisky is discontinued. It owns its Wine engines, its bottles and its data. Nothing is
+  proprietary and nothing phones home.</p>
+
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Bottles</h3>
+      <p>A private Windows environment per app: its own C: drive, programs and engine, isolated from every other bottle.</p>
+    </div>
+    <div class="card">
+      <h3>Engines</h3>
+      <p>Apple's Game Porting Toolkit or open-source Wine-staging, downloaded on demand — never bundled, never vendored.</p>
+    </div>
+    <div class="card">
+      <h3>Fixes</h3>
+      <p>Per-game recipes applied automatically at launch, in the spirit of Proton's <code>protonfixes</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Install App</h3>
+      <p>A built-in catalog — Steam, 7-Zip, redistributables — fetched and installed into a bottle for you.</p>
+    </div>
+    <div class="card">
+      <h3>Programs</h3>
+      <p>Scans a bottle's Start Menu, Desktop and Program Files and turns what it finds into a launchable grid.</p>
+    </div>
+    <div class="card">
+      <h3>Performance</h3>
+      <p>Per-bottle tuning: threading, MetalFX upscaling, frame pacing, DXVK, and a Metal frame counter.</p>
+    </div>
+  </div>
+
+  <h2>Choosing an engine</h2>
+  <p>This is the one choice worth reading about before you make it, so Overpass shows the same
+  trade-off everywhere an engine is picked.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Engine</th><th>What it is</th><th>Trade-off</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Game Porting Toolkit</strong><br><span style="color:var(--muted);font-size:.85em">default</span></td>
+        <td>Wine plus Apple's D3DMetal, translating DirectX&nbsp;11/12 straight to Metal. Best performance for most games.</td>
+        <td>Built on an older Wine, so some modern apps — <strong>including the Steam client</strong> — can fail to run. D3DMetal is under Apple's non-commercial licence.</td>
+      </tr>
+      <tr>
+        <td><strong>Wine-staging</strong></td>
+        <td>The newest upstream Wine-staging, fully open source, with the widest app compatibility.</td>
+        <td>DirectX goes through DXVK rather than D3DMetal, usually slower for games.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note">
+    <p><strong>Both engines are x86_64 and need Rosetta&nbsp;2.</strong> Apple plans to remove most of
+    Rosetta starting with macOS&nbsp;28, at which point these engines may stop working. Engine
+    selection sits behind an abstraction specifically so a native arm64 build — once one exists —
+    can be added as a single catalog entry rather than a rewrite.</p>
+  </div>
+
+  <h2>The fix database</h2>
+  <p>Some Windows programs need a particular nudge before they run under Wine: a font package, a
+  registry value, a launch flag. Overpass keeps those recipes in a database and applies them for
+  you, so you never have to know they exist. Slow steps — Winetricks verbs above all — run once per
+  bottle and are recorded. Environment variables and launch arguments re-apply every launch, so
+  removing a fix removes its effects with nothing left behind.</p>
+
+  <h3>Not every finding is a fix</h3>
+  <p>Some programs cannot work under Wine on macOS at all, and the most useful thing a database can
+  do is say so <em>before</em> you spend twenty minutes installing one.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Severity</th><th>Meaning</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill no">wontRun</span></td><td>No bottle setting can make this work.</td><td>Ubisoft Connect needs engine-level support only CrossOver has.</td></tr>
+      <tr><td><span class="pill deg">degraded</span></td><td>Runs, with a limitation worth knowing first.</td><td>Counter-Strike&nbsp;2 plays, but VAC keeps compatibility layers off secure servers.</td></tr>
+      <tr><td><span class="pill info">info</span></td><td>Runs fine — there's simply a better route.</td><td>No Man's Sky ships a native Mac build, and its Windows build is Vulkan.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><code>wontRun</code> and <code>degraded</code> are surfaced in the app. <code>info</code> goes to
+  the run log — worth recording, not worth interrupting for. You can add your own by dropping a JSON
+  file in; a fix only has to spell out the fields it actually uses.</p>
+
+  <h2 id="status">Honest status</h2>
+  <p>Things this project knows are unfinished or unproven, stated here rather than discovered later.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Area</th><th>Where it stands</th></tr></thead>
+    <tbody>
+      <tr><td>Frame generation</td><td>A Metal optical-flow estimator runs at ~1.1&nbsp;ms per frame pair at 1080p and the present hook is verified against a real D3D11 game. <strong>Nothing interpolates yet</strong> — this stage produces the motion field only.</td></tr>
+      <tr><td>GPTK&nbsp;4 engines</td><td>An engine can be derived from a user-supplied Game Porting Toolkit&nbsp;4 download. <strong>Experimental:</strong> <code>regsvr32 d3d11.dll</code> hangs undiagnosed and no game has rendered on one. Not yet reachable from the UI.</td></tr>
+      <tr><td>Signing</td><td>Ad-hoc signed, no Apple Developer ID. First launch needs <strong>right-click → Open</strong>; a plain double-click is blocked by Gatekeeper.</td></tr>
+      <tr><td>D3DMetal scope</td><td>Measured: GPTK translates <strong>64-bit D3D11/D3D12 only</strong>. D3D9 is wined3d on both architectures, as is the 32-bit D3D11, so D3D9 and 32-bit titles never reach Metal however well they render.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2 id="build">Building from source</h2>
+  <p>No Xcode project — Swift Package Manager plus a bundling script.</p>
+<pre><code>git clone https://github.com/Joto3D/overpass.git
+cd overpass
+swift build -c release
+./scripts/bundle.sh</code></pre>
+  <p>There is a headless smoke test that creates a bottle, launches Notepad in it and tears
+  everything down again, plus a unit suite:</p>
+<pre><code>.build/debug/Overpass --self-test   # unit suite
+.build/debug/Overpass --check       # real bottle, real Wine</code></pre>
+
+  <h2>Licensing, in two halves</h2>
+  <p>Overpass's own source is <strong>GPL-3.0-or-later</strong>. That covers the app, not the engines
+  it downloads at runtime and never redistributes: Wine is LGPL-2.1+, and Apple's D3DMetal comes
+  under Apple's non-commercial licence, which you accept when you install that engine. Keeping
+  engines out of the repository is what keeps the boundary clean.</p>
+
+  <p>The per-game fix <em>data</em> — every executable name, Winetricks verb, registry entry, note
+  and source — is dedicated to the public domain under <strong>CC0&nbsp;1.0</strong>, separately from
+  the code. A fix recipe is a statement of fact, and facts belong to everybody. The dedication
+  exists so recipes can move freely between Overpass and projects whose licences are otherwise
+  incompatible with each other.</p>
+
+  <div class="note">
+    <p><strong>The flip side, stated plainly.</strong> Because the data is CC0 rather than GPL,
+    entries may <em>not</em> be copied out of a GPL fix database — umu-protonfixes, Bridgeplay,
+    proton-ge — or a proprietary one. Read the underlying fact from a public source and write the
+    entry yourself, citing it.</p>
+    <p>Every built-in fix was produced that way. <code>source</code> is mandatory, and the self-test
+    fails the build on a fix that cites nothing.</p>
+  </div>
+
+  <footer>
+    <p><a href="https://github.com/Joto3D/overpass">Joto3D/overpass</a> · GPL-3.0-or-later ·
+    fix data under CC0 1.0 · not affiliated with Apple, CodeWeavers, Valve or the Wine project.</p>
+  </footer>
+
+</div>
+</body>
+</html>
