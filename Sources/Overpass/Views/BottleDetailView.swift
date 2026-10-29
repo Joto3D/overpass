@@ -2,46 +2,69 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// A bottle's detail screen: header (name/engine/Windows version, Run/Stop,
-/// tools menu), and a Programs / Config / Logs tab picker. The whole view
-/// is a drop target for `.exe`/`.msi` files.
+/// A bottle's detail screen: a header (identity, Run/Stop, tools menu), then
+/// either the bottle's LIBRARY or its CONFIGURATION. The whole view is a
+/// drop target for `.exe`/`.msi`/`.bat` files.
 ///
-/// Tabs are provided by ProgramsGridView, BottleConfigView, PerformanceView,
-/// ExtrasView and LogViewerView. (Historical note:
-/// small and self-contained so another pass (program scanning, richer
-/// config) can replace them without touching this file's layout.
+/// Why two modes instead of the old six flat tabs (Programs / Games /
+/// Config / Performance / Extras / Logs): this is a game launcher, and a
+/// bottle is opened to play something. Four of those six tabs are tuning
+/// (Config, Performance, Extras) or diagnostics (Logs) — a System
+/// Preferences idiom that put the artwork grid a tab away from where the
+/// user lands. So the top level now holds only the things you PLAY from —
+/// Games (cover art) and Programs (the raw `.exe` list) — and everything
+/// else sits behind one "Configure" button, in its own sub-mode with a way
+/// back. It is a mode swap inside the detail pane rather than a sheet on
+/// purpose: Extras installs DXVK/D3DMetal/winetricks, which can fail
+/// through `AppState.report`, and an alert raised under a sheet is queued
+/// invisibly (see `SheetPresence` in Components.swift). Nothing here
+/// presents a sheet, so the root alert in `MainWindow` still covers every
+/// failure; Logs also keeps its live refresh, which a modal would block.
+///
+/// The destination views are ProgramsGridView, GamesView, BottleConfigView,
+/// PerformanceView, ExtrasView and LogViewerView; none of them is edited
+/// here, only where they are mounted.
 struct BottleDetailView: View {
     let bottleID: UUID
     @Environment(AppState.self) private var appState
     @Environment(ThemeStore.self) private var themeStore
-    @State private var selectedTab: Tab = .programs
+    @State private var isConfiguring = false
+    @State private var shelf: Shelf = .programs
+    @State private var tuning: Tuning = .config
     @State private var isDropTargeted = false
     /// Cached `GameLibrary.scan` result, used only to decide whether the
-    /// Games tab appears at all — `GamesView` itself re-scans
-    /// independently once shown. Rescanned on `.task(id: bottleID)`
-    /// rather than a plain `.task`: this view keeps its SwiftUI identity
-    /// across bottle switches (only `bottleID` changes), so a bare
-    /// `.task` would never refire and the tab would keep reflecting
-    /// whichever bottle was selected first.
-    @State private var hasGames = false
+    /// Games shelf exists and which shelf to land on — `GamesView` itself
+    /// re-scans independently once shown. `nil` means the first scan has
+    /// not finished: the library area shows a spinner meanwhile rather than
+    /// defaulting to Programs, because landing on the executable list for a
+    /// moment and then jumping to Games is exactly the flash this layout
+    /// exists to remove. `MainWindow` gives this view `.id(bottleID)`, so
+    /// every bottle starts from `nil`/library/landing-shelf state instead of
+    /// inheriting the previous bottle's tab (this view used to keep its
+    /// identity across bottle switches, which is why the scan was keyed
+    /// on `.task(id:)`; that still holds as a second line of defence).
+    @State private var hasGames: Bool?
     /// True while the tools menu's "Rescan programs" is running. The
-    /// Programs tab's own Rescan button disables itself while scanning, but
+    /// Programs shelf's own Rescan button disables itself while scanning, but
     /// this menu item had no such guard, so a second click started an
     /// overlapping scan whose merge could overwrite the first's result.
     @State private var isRescanning = false
 
-    enum Tab: String, CaseIterable, Identifiable {
-        case programs = "Programs"
+    /// What you play from. `games` is only offered once a scan found one.
+    enum Shelf: String, CaseIterable, Identifiable {
         case games = "Games"
+        case programs = "Programs"
+        var id: String { rawValue }
+    }
+
+    /// Everything you go and find rather than land on. Same four screens, same
+    /// names as before the regroup.
+    enum Tuning: String, CaseIterable, Identifiable {
         case config = "Config"
         case performance = "Performance"
         case extras = "Extras"
         case logs = "Logs"
         var id: String { rawValue }
-    }
-
-    private var visibleTabs: [Tab] {
-        Tab.allCases.filter { $0 != .games || hasGames }
     }
 
     private var bottle: Bottle? {
@@ -57,34 +80,32 @@ struct BottleDetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 header(bottle)
 
-                Picker("View", selection: $selectedTab) {
-                    ForEach(visibleTabs) { tab in
-                        Text(tab.rawValue).tag(tab)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                // Sized to its labels rather than capped at 320pt: with six
-                // tabs (Games appears once a scan finds one) "Performance"
-                // and "Programs" were truncated in a 320pt control.
-                .fixedSize(horizontal: true, vertical: false)
-                .padding(.top, Theme.Spacing.l)
-                .padding(.bottom, Theme.Spacing.outer)
+                modeBar
+                    .padding(.top, Theme.Spacing.l)
+                    .padding(.bottom, Theme.Spacing.outer)
 
                 Group {
-                    switch selectedTab {
-                    case .programs:
-                        ProgramsGridView(bottleID: bottle.id)
-                    case .games:
-                        GamesView(bottleID: bottle.id)
-                    case .config:
-                        BottleConfigView(bottleID: bottle.id)
-                    case .performance:
-                        PerformanceView(bottleID: bottle.id)
-                    case .extras:
-                        ExtrasView(bottleID: bottle.id)
-                    case .logs:
-                        LogViewerView(bottleID: bottle.id)
+                    if isConfiguring {
+                        switch tuning {
+                        case .config:
+                            BottleConfigView(bottleID: bottle.id)
+                        case .performance:
+                            PerformanceView(bottleID: bottle.id)
+                        case .extras:
+                            ExtrasView(bottleID: bottle.id)
+                        case .logs:
+                            LogViewerView(bottleID: bottle.id)
+                        }
+                    } else if let hasGames {
+                        switch hasGames ? shelf : .programs {
+                        case .games:
+                            GamesView(bottleID: bottle.id)
+                        case .programs:
+                            ProgramsGridView(bottleID: bottle.id)
+                        }
+                    } else {
+                        InlineProgress(text: "Loading library\u{2026}")
+                            .padding(.top, Theme.Spacing.s)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -92,10 +113,15 @@ struct BottleDetailView: View {
             .padding(Theme.Spacing.outer)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .task(id: bottleID) {
-                hasGames = !(await GameLibrary.scan(bottle: bottle).isEmpty)
-                if !hasGames, selectedTab == .games {
-                    selectedTab = .programs
-                }
+                await refreshHasGames(bottle, landing: true)
+            }
+            // A game installed through a running installer only exists once
+            // that run ends; without this the Games shelf stayed hidden until
+            // the bottle was re-selected. Landing is untouched: a user already
+            // on Programs is not yanked across the screen.
+            .onChange(of: isRunning) { _, nowRunning in
+                guard !nowRunning, let bottle = self.bottle else { return }
+                Task { await refreshHasGames(bottle, landing: false) }
             }
             .background {
                 if isDropTargeted {
@@ -123,32 +149,132 @@ struct BottleDetailView: View {
         }
     }
 
+    /// Scans for games and, when `landing`, picks the shelf to open on:
+    /// Games if the bottle has any, otherwise Programs. The bottle is
+    /// re-checked after the await so a slow scan for the bottle just left
+    /// cannot overwrite the one now showing.
+    private func refreshHasGames(_ bottle: Bottle, landing: Bool) async {
+        let found = !(await GameLibrary.scan(bottle: bottle).isEmpty)
+        guard bottle.id == bottleID else { return }
+        hasGames = found
+        if landing {
+            shelf = found ? .games : .programs
+        } else if !found, shelf == .games {
+            shelf = .programs
+        }
+    }
+
+    /// The strip between the header and the content. Library mode: the
+    /// Games/Programs picker (just a "Programs" label while the bottle has
+    /// no games — a one-segment picker is a control with nothing to choose)
+    /// and the Configure button on the far side. Configure mode: a way back
+    /// that names where it goes, and the four configuration screens.
+    @ViewBuilder
+    private var modeBar: some View {
+        HStack(spacing: Theme.Spacing.m) {
+            if isConfiguring {
+                Button {
+                    isConfiguring = false
+                } label: {
+                    Label(shelf == .games && hasGames == true ? "Games" : "Programs", systemImage: "chevron.left")
+                }
+                .buttonStyle(.quietCompact)
+                // Escape leaves configuration, the way it dismisses any
+                // other secondary screen on the Mac.
+                .keyboardShortcut(.cancelAction)
+                .help("Back to this bottle's \(shelf == .games && hasGames == true ? "games" : "programs")")
+
+                Picker("Configuration", selection: $tuning) {
+                    ForEach(Tuning.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                // Sized to its labels rather than capped at a fixed width:
+                // "Performance" was truncated in a 320pt control.
+                .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 0)
+            } else {
+                if hasGames == true {
+                    Picker("Library", selection: $shelf) {
+                        ForEach(Shelf.allCases) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize(horizontal: true, vertical: false)
+                } else if hasGames == false {
+                    SectionHeader(title: "Programs", systemImage: "list.bullet")
+                }
+                Spacer(minLength: 0)
+                Button {
+                    isConfiguring = true
+                } label: {
+                    Label("Configure", systemImage: "gearshape")
+                }
+                .buttonStyle(.quietCompact)
+                .help("Config, Performance, Extras and Logs for this bottle")
+            }
+        }
+    }
+
     private func isRunnableFile(_ url: URL) -> Bool {
         ["exe", "msi", "bat"].contains(url.pathExtension.lowercased())
     }
 
+    /// Identity on the left, actions on the right. The hierarchy is: a glyph
+    /// tile and the bottle's name (the only large type on the screen), then
+    /// its facts as quiet chips, then the one accent control. The tile uses
+    /// the same cylinder glyph as the sidebar row so the two read as the
+    /// same object.
     @ViewBuilder
     private func header(_ bottle: Bottle) -> some View {
         HStack(alignment: .center, spacing: Theme.Spacing.m) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            RoundedRectangle(cornerRadius: Theme.Radius.icon, style: .continuous)
+                .fill(themeStore.current.badgeTint.opacity(Theme.Opacity.wash))
+                .frame(width: Theme.Metrics.listRow, height: Theme.Metrics.listRow)
+                .overlay {
+                    Image(systemName: "cylinder")
+                        .font(Theme.headingFont(18))
+                        // `ink`, not the gradient: a glyph is thin, and
+                        // `ink` is the palette colour that is safe as one.
+                        .foregroundStyle(themeStore.current.ink)
+                }
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: Theme.Spacing.compact) {
                 Text(bottle.name)
-                    .font(Theme.titleFont(22, weight: .semibold))
+                    .font(Theme.titleFont(24, weight: .semibold))
                     .lineLimit(2)
                     .minimumScaleFactor(0.9)
-                // One line, so a long engine name could clip silently: the
-                // full text is in the tooltip, and it is selectable so the
-                // engine/Windows version can be copied into a bug report.
-                Text(subtitle(bottle))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help(subtitle(bottle))
-                    .textSelection(.enabled)
+                // Chips wrap (FlowLayout) instead of clipping when the
+                // engine name is long. The full text stays in the tooltip.
+                // (The old subtitle was selectable text; chips are not.)
+                FlowLayout(spacing: Theme.Spacing.compact) {
+                    if let engine = appState.engine(for: bottle) {
+                        Chip(text: engine.displayName, systemImage: "gearshape.2")
+                    } else {
+                        // Warning wording and glyph, not colour alone.
+                        Chip(text: "Engine missing", systemImage: "exclamationmark.triangle",
+                             tint: Theme.Tone.warning.ink)
+                    }
+                    Chip(text: bottle.windowsVersion.displayName, systemImage: "macwindow")
+                    if isRunning {
+                        Chip(text: "Running", systemImage: "play.fill", tint: Theme.Tone.success.ink)
+                    }
+                }
+                .help(subtitle(bottle))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(subtitle(bottle))
             }
             Spacer()
             HStack(spacing: Theme.Spacing.s) {
                 // The one accent control on this screen — everything else
-                // beside it (Stop, the tools menu) stays quiet/bordered.
+                // beside it (Stop, Configure, the tools menu) stays
+                // quiet/bordered, in both modes: the header is shared, so
+                // "Run .exe…" is one click away even inside Configure.
                 Button("Run .exe…") { pickAndRun(bottle) }
                     .buttonStyle(.accentCompact)
                 Button("Stop") {
@@ -161,6 +287,7 @@ struct BottleDetailView: View {
         }
     }
 
+    /// The facts line as plain text — the chips' tooltip and VoiceOver label.
     private func subtitle(_ bottle: Bottle) -> String {
         var parts: [String] = []
         if let engine = appState.engine(for: bottle) {

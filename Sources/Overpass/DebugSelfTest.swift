@@ -57,6 +57,7 @@ enum DebugSelfTest {
         testLogStoreOrdering()
         testUserFixCache()
         testTreeSize(root: root)
+        testCompatibility()
 
         print("\n\(passCount) passed, \(failCount) failed")
         fflush(stdout)
@@ -1388,7 +1389,7 @@ enum DebugSelfTest {
             "Helldivers 2 names FX Steam Launcher as its alternative",
             fx?.name == "FX Steam Launcher"
                 && fx?.bundleIdentifier == "es.fxgam.steamac"
-                && fx?.url.absoluteString == "https://github.com/StonkGuy/steamac"
+                && fx?.url.absoluteString == "https://github.com/fxgl/steamac"
         )
         check(
             "EA app and Ubisoft Connect do not recommend an alternative",
@@ -1661,7 +1662,7 @@ enum DebugSelfTest {
             )
             check(
                 "not-installed wording says it is not installed and gives the URL",
-                missing.contains("it is not installed") && missing.hasSuffix("https://github.com/StonkGuy/steamac.")
+                missing.contains("it is not installed") && missing.hasSuffix("https://github.com/fxgl/steamac.")
             )
             check(
                 "the lookup is asked for the alternative's bundle identifier",
@@ -2286,5 +2287,83 @@ enum DebugSelfTest {
             "got \(Diagnostics.formatBytes(2 * 1024 * 1024 * 1024))"
         )
         check("formatBytes: zero", Diagnostics.formatBytes(0) == "0 B", "got \(Diagnostics.formatBytes(0))")
+    }
+
+    /// `Compatibility` derives a badge from the fix database. The cases
+    /// below pin the two things most likely to go quietly wrong: that a
+    /// "will not run" finding always beats a cheerful one, and that a Steam
+    /// game is never rated by its launcher executable.
+    private static func testCompatibility() {
+        check(
+            "an advisory maps to its matching rating",
+            Compatibility.of(GameFixCatalog.helldivers2) == .wontRun
+                && Compatibility.of(GameFixCatalog.counterStrike2) == .limited
+                && Compatibility.of(GameFixCatalog.noMansSky) == .nativeBetter
+        )
+        check(
+            "a fix with no advisory is worksWithFix",
+            Compatibility.of(GameFixCatalog.steam) == .worksWithFix
+        )
+
+        // THE STEAM TRAP. Every Steam game's launchExe is Steam.exe, so
+        // rating by executable would give the whole library the `steam`
+        // entry's rating. A Steam game must be rated by app id alone.
+        let steamGame = InstalledGame(
+            id: "steam:9999", name: "Some Game", store: .steam, appID: "9999",
+            installDir: nil, sizeBytes: nil,
+            launchExe: URL(fileURLWithPath: "/b/Steam/steam.exe"), launchArgs: "-applaunch 9999"
+        )
+        check(
+            "a Steam game is not rated by Steam.exe",
+            Compatibility.forGame(steamGame) == .untested,
+            "got \(Compatibility.forGame(steamGame)) — it matched the Steam client entry"
+        )
+
+        let helldivers = InstalledGame(
+            id: "steam:553850", name: "HELLDIVERS 2", store: .steam, appID: "553850",
+            installDir: nil, sizeBytes: nil,
+            launchExe: URL(fileURLWithPath: "/b/Steam/steam.exe"), launchArgs: "-applaunch 553850"
+        )
+        check(
+            "a Steam game IS rated by its app id",
+            Compatibility.forGame(helldivers) == .wontRun
+        )
+        check(
+            "a Steam game with no app id is untested, not guessed",
+            Compatibility.forGame(InstalledGame(
+                id: "steam:?", name: "Unknown", store: .steam, appID: nil,
+                installDir: nil, sizeBytes: nil,
+                launchExe: URL(fileURLWithPath: "/b/Steam/steam.exe"), launchArgs: ""
+            )) == .untested
+        )
+        check(
+            "a GOG game is rated by its own executable",
+            Compatibility.forGame(InstalledGame(
+                id: "gog:x", name: "Battle.net thing", store: .gog, appID: nil,
+                installDir: nil, sizeBytes: nil,
+                launchExe: URL(fileURLWithPath: "/b/g/start_protected_game.exe"), launchArgs: ""
+            )) == .wontRun
+        )
+        check(
+            "an unknown executable is untested",
+            Compatibility.forExecutable(URL(fileURLWithPath: "/b/nothing-known.exe")) == .untested
+        )
+        check(
+            "severity wins over catalog order when several entries match",
+            Compatibility.forExecutable(
+                URL(fileURLWithPath: "/b/start_protected_game.exe"),
+                in: [GameFixCatalog.steam, GameFixCatalog.helldivers2]
+            ) == .wontRun
+        )
+        check(
+            "untested is the only rating not worth interrupting for",
+            Compatibility.allCases.filter { !$0.isNoteworthy } == [.untested]
+        )
+        check(
+            "every rating has a label, a detail sentence and a glyph",
+            Compatibility.allCases.allSatisfy {
+                !$0.label.isEmpty && !$0.detail.isEmpty && !$0.systemImage.isEmpty
+            }
+        )
     }
 }

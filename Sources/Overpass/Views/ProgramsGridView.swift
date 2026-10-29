@@ -102,6 +102,11 @@ struct ProgramsGridView: View {
                                 ProgramRow(
                                     pin: pin,
                                     bottle: bottle,
+                                    // Resolved here, once per render, so the
+                                    // row's body (which re-runs on every hover
+                                    // flip) holds a value instead of walking
+                                    // the fix catalog each time.
+                                    compatibility: Compatibility.forExecutable(URL(fileURLWithPath: pin.exePath)),
                                     isSelected: selectedPinID == pin.id,
                                     onSelect: { selectedPinID = pin.id },
                                     onEditArgs: { beginEditingArgs(pin) }
@@ -303,11 +308,22 @@ struct ProgramsGridView: View {
 
 // MARK: - Program row
 
+private extension Compatibility {
+    /// The one rating that changes how a row looks beyond its badge: a
+    /// program known not to run is dimmed and its Run button demoted to
+    /// "Run anyway" in wording. (Mirrors the Games screen's rule.)
+    var isBlocking: Bool { self == .wontRun }
+}
+
 private struct ProgramRow: View {
     @Environment(AppState.self) private var appState
     @Environment(ThemeStore.self) private var themeStore
     let pin: PinnedProgram
     let bottle: Bottle
+    /// From the fix database by executable name. `.untested` is the common
+    /// answer and is deliberately not shown (see `isNoteworthy`): a badge
+    /// on every row would say nothing and bury the ones that do.
+    let compatibility: Compatibility
     let isSelected: Bool
     let onSelect: () -> Void
     let onEditArgs: () -> Void
@@ -317,11 +333,22 @@ private struct ProgramRow: View {
         pathRelativeToDriveC(pin.exePath, bottle: bottle)
     }
 
+    /// Name and path, plus the rating's sentence when there is one worth
+    /// reading. The badge's own tooltip only fires on the badge itself.
+    private var rowHelp: String {
+        var text = subtitle.isEmpty ? pin.name : "\(pin.name) \u{2014} \(subtitle)"
+        if compatibility.isNoteworthy { text += "\n\(compatibility.label): \(compatibility.detail)" }
+        return text
+    }
+
     var body: some View {
         HStack(spacing: Theme.Spacing.m) {
-            Image(systemName: pin.isSystem ? "gearshape" : "app.fill")
+            // Same treatment as a Games row: a program known not to run
+            // swaps its glyph for the badge's symbol in the danger ink, so
+            // it stands out down the left edge of a long list.
+            Image(systemName: compatibility.isBlocking ? compatibility.systemImage : (pin.isSystem ? "gearshape" : "app.fill"))
                 .font(Theme.rowTitleFont)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(compatibility.isBlocking ? Theme.Tone.danger.ink : Color.secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
 
@@ -329,9 +356,13 @@ private struct ProgramRow: View {
                 HStack(spacing: Theme.Spacing.compact) {
                     Text(pin.name)
                         .font(Theme.rowTitleFont)
+                        .foregroundStyle(compatibility.isBlocking ? .secondary : .primary)
                         .lineLimit(1)
                     if pin.isSystem {
                         Chip(text: "System", tint: .secondary)
+                    }
+                    if compatibility.isNoteworthy {
+                        CompatibilityBadge(compatibility: compatibility, style: .inline)
                     }
                 }
                 Text(subtitle)
@@ -340,7 +371,7 @@ private struct ProgramRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .help(subtitle.isEmpty ? pin.name : "\(pin.name) — \(subtitle)")
+            .help(rowHelp)
 
             Spacer(minLength: Theme.Spacing.m)
 
@@ -353,7 +384,7 @@ private struct ProgramRow: View {
                 .buttonStyle(.borderless)
                 .controlSize(.small)
                 .fixedSize()
-                .help("Run")
+                .help(compatibility.isBlocking ? "Run anyway \u{2014} \(compatibility.detail)" : "Run")
                 .accessibilityLabel("Run \(pin.name)")
             }
         }

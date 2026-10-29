@@ -537,3 +537,87 @@ extension View {
         modifier(SheetPresenceTracker())
     }
 }
+
+/// The at-a-glance compatibility medal for a game or program.
+///
+/// `Compatibility` owns the words and the glyph so there is one source of
+/// truth for them; this view owns only the colour, because which tone
+/// reads as "bad" is a theme decision. The mapping is deliberately plain:
+/// a rating the user should act on gets a real tone, and `.untested` —
+/// which will be most of the library — gets no tint at all, so a wall of
+/// covers is not a wall of colour.
+///
+/// Two presentations, because the badge has to work in two very different
+/// places. `.overlay` sits on top of cover art, where a translucent wash
+/// would be illegible over a bright image, so it carries its own dark
+/// scrim. `.inline` sits on a card or in a row and matches `Chip`.
+struct CompatibilityBadge: View {
+    enum Style { case overlay, inline }
+
+    let compatibility: Compatibility
+    var style: Style = .inline
+    /// `.overlay` hides the label on small covers, where there is room for
+    /// a glyph and nothing else. The accessibility label keeps the words.
+    var glyphOnly: Bool = false
+
+    @Environment(\.colorScheme) private var scheme
+
+    /// `nil` for `.untested`: no tone, so it recedes.
+    private var tone: Theme.Tone? {
+        switch compatibility {
+        case .wontRun:      return .danger
+        case .limited:      return .warning
+        case .nativeBetter: return .info
+        case .worksWithFix: return .success
+        case .untested:     return nil
+        }
+    }
+
+    private var ink: Color { tone?.ink ?? .secondary }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Image(systemName: compatibility.systemImage)
+                .font(.system(size: 10, weight: .semibold))
+            if !glyphOnly {
+                Text(compatibility.label)
+                    .font(Theme.chipFont)
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(style == .overlay ? .white : ink)
+        .padding(.horizontal, glyphOnly ? Theme.Spacing.xs : Theme.Spacing.s)
+        .padding(.vertical, Theme.Spacing.xs)
+        .background(background)
+        .overlay(
+            Capsule().strokeBorder(
+                style == .overlay ? Color.white.opacity(0.22) : ink.opacity(Theme.Opacity.wash * 1.6),
+                // 1pt literal, not `Theme.Spacing.hairline` — that token is a
+                // 1pt *gap* between two lines of text and means something else.
+                lineWidth: 1
+            )
+        )
+        .clipShape(Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(compatibility.label)
+        .accessibilityHint(compatibility.detail)
+        .help(compatibility.detail)
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        switch style {
+        case .overlay:
+            // Opaque enough to stay legible over any cover art, with the
+            // tone carried by a translucent layer on top rather than by
+            // the text colour (white text on a coloured wash over an
+            // unknown image is the one combination that cannot be checked).
+            ZStack {
+                Capsule().fill(.black.opacity(0.62))
+                Capsule().fill((tone?.ink ?? .clear).opacity(0.30))
+            }
+        case .inline:
+            Capsule().fill(ink.opacity(Theme.Opacity.softWash))
+        }
+    }
+}

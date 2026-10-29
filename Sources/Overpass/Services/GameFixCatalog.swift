@@ -277,9 +277,12 @@ enum GameFixCatalog {
             (start_protected_game.exe), used by Helldivers 2, ELDEN RING \
             and others. EAC's Linux/Proton clearance does not extend to \
             Wine on macOS, so the anti-cheat fails at start whichever game \
-            is behind it. The only route that reaches gameplay runs real \
-            Proton with FEX inside a Linux VM, and online play is \
-            unconfirmed even there.
+            is behind it. The route that does work runs real Proton inside \
+            a Linux VM, because Arrowhead opted into EAC's Proton runtime \
+            and that clearance covers Linux. FX Steam Launcher's own \
+            telemetry reports Helldivers 2 at a 100% launch rate over 130 \
+            sessions and 37.1 hours of play, median 51.5 fps, last seen 29 \
+            October 2026, on M4 Pro / M1 Max / M3 Pro / M1 Pro.
 
             Helldivers 2 in particular switched from nProtect GameGuard to \
             EAC on 20 October 2026 and has been reported crashing at \
@@ -293,10 +296,17 @@ enum GameFixCatalog {
             alternative: .init(
                 name: "FX Steam Launcher",
                 bundleIdentifier: "es.fxgam.steamac",
-                url: URL(string: "https://github.com/StonkGuy/steamac")!
+                // Upstream, verified 29 October 2026 via the GitHub API:
+                // `fxgl/steamac` is the original (fork: false, no parent,
+                // 813 stars, Apache-2.0). This previously pointed at
+                // `StonkGuy/steamac`, which the API reports as a fork of it
+                // with 10 stars — sending someone to a fork when the
+                // upstream is right there is a worse answer, even though
+                // the fork happened to be pushed more recently.
+                url: URL(string: "https://github.com/fxgl/steamac")!
             )
         ),
-        source: "gamingonlinux.com (EAC switch, 20 Oct 2026); github.com/gauthierpiarrette/highball/issues/439 (macOS 27.0.1); github.com/stmSi/helldivers2-mac-eac-fix"
+        source: "gamingonlinux.com (EAC switch, 20 Oct 2026, and \"Steam Deck and Linux compatibility remains unchanged\"); github.com/gauthierpiarrette/highball/issues/439 (fails under Wine on macOS 27.0.1); fxgl.github.io/steamac/games.html read 29 Oct 2026 (the launch-rate and fps figures). Those figures come from 5 installs, so the sample is small, and the page states its fps is guest scanout rather than an in-game benchmark and is \"a useful comparison, not a guarantee of compatibility\"."
     )
 
     static let counterStrike2 = GameFix(

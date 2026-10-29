@@ -21,6 +21,15 @@ struct GamesView: View {
     @State private var hasScannedOnce = false
     @State private var searchText = ""
     @State private var storeFilter: Store?
+    /// The card or row the user last clicked. Selection exists so a game
+    /// keeps its Play button on screen without the pointer parked on it
+    /// (a hover-only affordance vanishes the moment you move to read the
+    /// title); it changes nothing about what Play does.
+    @State private var selectedGameID: InstalledGame.ID?
+    /// Compatibility per game id, filled once per scan. `Compatibility`
+    /// is a catalog lookup; doing it in each card's `body` would redo it
+    /// on every hover flip of every card.
+    @State private var ratings: [InstalledGame.ID: Compatibility] = [:]
 
     @AppStorage("overpass.games.viewMode") private var viewMode: GamesViewMode = .grid
 
@@ -112,13 +121,24 @@ struct GamesView: View {
                         // games into a few enormous 2:3 covers. Leading
                         // alignment keeps a short last row against the left
                         // edge instead of centring it under the others.
+                        //
+                        // 176...240 (was 150...190): the cover is the
+                        // content of this screen, so it gets room to read as
+                        // art. At 176 wide a cover is 264 tall, and every
+                        // badge label still fits on it without `glyphOnly`.
                         LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: Theme.Spacing.l, alignment: .top)],
+                            columns: [GridItem(.adaptive(minimum: 176, maximum: 240), spacing: Theme.Spacing.l, alignment: .top)],
                             alignment: .leading,
                             spacing: Theme.Spacing.l
                         ) {
                             ForEach(shownGames) { game in
-                                GameCard(game: game, bottle: bottle)
+                                GameCard(
+                                    game: game,
+                                    bottle: bottle,
+                                    compatibility: ratings[game.id] ?? .untested,
+                                    isSelected: selectedGameID == game.id,
+                                    onSelect: { selectedGameID = game.id }
+                                )
                             }
                         }
                         // Headroom for the hover treatment. A ScrollView clips
@@ -144,7 +164,13 @@ struct GamesView: View {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(shownGames) { game in
-                                GameRow(game: game, bottle: bottle)
+                                GameRow(
+                                    game: game,
+                                    bottle: bottle,
+                                    compatibility: ratings[game.id] ?? .untested,
+                                    isSelected: selectedGameID == game.id,
+                                    onSelect: { selectedGameID = game.id }
+                                )
                                 if game.id != shownGames.last?.id {
                                     Divider()
                                 }
@@ -266,7 +292,9 @@ struct GamesView: View {
             isScanning = false
             hasScannedOnce = true
         }
-        games = await GameLibrary.scan(bottle: bottle)
+        let scanned = await GameLibrary.scan(bottle: bottle)
+        games = scanned
+        ratings = Dictionary(scanned.map { ($0.id, Compatibility.forGame($0)) }, uniquingKeysWith: { first, _ in first })
     }
 }
 
@@ -338,58 +366,108 @@ enum GamesViewMode: String {
     case grid, list
 }
 
+// MARK: - Shared presentation
+
+/// What a game's rating changes about how it is shown, in one place so the
+/// card and the row cannot disagree.
+private extension Compatibility {
+    /// True only for the rating that says the launch will fail. It is the
+    /// one rating that changes how the whole card looks (a greyed cover and
+    /// a de-emphasised Play button), because it is the one worth noticing
+    /// before waiting on a launch that cannot succeed.
+    var isBlocking: Bool { self == .wontRun }
+
+    /// The tooltip for a card or row. Plain `help` on the badge only fires
+    /// while the pointer is exactly on the badge; this puts the sentence on
+    /// the whole item. Empty for `.untested` (nothing to say).
+    func help(for name: String, subtitle: String) -> String {
+        var parts = [name]
+        if !subtitle.isEmpty { parts[0] += " \u{2014} \(subtitle)" }
+        if isNoteworthy { parts.append("\(label): \(detail)") }
+        return parts.joined(separator: "\n")
+    }
+}
+
 // MARK: - Game card (grid mode)
 
-/// One Heroic-style library card: a 2:3 portrait cover (real Steam art when
-/// available, otherwise a generated monogram placeholder), the game's name
-/// below in up to two lines, and a muted store/size line. Hovering raises
-/// the card slightly and reveals a centered play button; double-clicking
-/// the card (or the play button itself) launches the game.
+/// One library card, art first: a 2:3 portrait cover (real Steam art when
+/// available, otherwise a generated monogram placeholder) that carries the
+/// card, with the name and a muted store/size line quietly beneath it.
+///
+/// - A compatibility badge sits on the cover's top-left corner, but only
+///   for a noteworthy rating. `.untested` is the common case and gets no
+///   badge at all: a clean cover means "nothing known".
+/// - A `.wontRun` game has its cover desaturated as well as badged, so it
+///   reads as unavailable at a glance, before anyone clicks Play.
+/// - Hovering or selecting raises the card and shows a labelled Play pill
+///   along the cover's bottom edge. Double-clicking the card (or the pill)
+///   launches. Single-clicking selects, which keeps the pill showing after
+///   the pointer moves away.
 private struct GameCard: View {
     @Environment(AppState.self) private var appState
     @Environment(ThemeStore.self) private var themeStore
     let game: InstalledGame
     let bottle: Bottle
+    let compatibility: Compatibility
+    let isSelected: Bool
+    let onSelect: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: NSImage?
     @State private var isHovering = false
+
+    private var coverShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+    }
+
+    /// The pill shows while pointed at or selected.
+    private var showsPlay: Bool { isHovering || isSelected }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.compact) {
             cover
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+                // Greyed out, not hidden or faded: still recognisable as the
+                // game, plainly not a candidate to launch. Saturation only,
+                // so the art keeps its contrast and the red badge is the one
+                // saturated thing left on the card.
+                .saturation(compatibility.isBlocking ? 0.2 : 1)
+                .clipShape(coverShape)
                 .overlay {
-                    RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                    coverShape.strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
                 }
-                .overlay {
-                    if isHovering {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                                .fill(Color.black.opacity(0.28))
-                            Button(action: play) {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 42, height: 42)
-                                    .background(Circle().fill(themeStore.current.accentGradient))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(game.launchExe == nil)
-                            .help("Play")
-                            .accessibilityLabel("Play \(game.name)")
-                        }
+                .overlay(alignment: .topLeading) {
+                    // Noteworthy ratings only. Never `glyphOnly` here: the
+                    // narrowest cover is 176pt, which holds every label, and
+                    // "Won't run" in particular has to be a word, not a glyph.
+                    if compatibility.isNoteworthy {
+                        CompatibilityBadge(compatibility: compatibility, style: .overlay)
+                            .padding(Theme.Spacing.s)
                     }
                 }
-                .shadow(color: .black.opacity(isHovering ? 0.32 : 0.14), radius: isHovering ? 10 : 4, y: isHovering ? 5 : 2)
-                // The shadow and the play overlay already say "this one";
-                // the grow is dropped for people who asked the system for
-                // less motion.
+                .overlay(alignment: .bottom) {
+                    if showsPlay {
+                        playPill
+                    }
+                }
+                .overlay {
+                    // Selection ring on top of the cover edge. The theme's
+                    // `ink` is the accent tuned to read as a thin stroke.
+                    if isSelected {
+                        coverShape.strokeBorder(themeStore.current.ink, lineWidth: 2)
+                    }
+                }
+                .shadow(color: .black.opacity(showsPlay ? 0.32 : 0.14), radius: showsPlay ? 10 : 4, y: showsPlay ? 5 : 2)
+                // The shadow and the play pill already say "this one"; the
+                // grow is dropped for people who asked the system for less
+                // motion. Hover only: a selected card that grew would
+                // keep jostling its neighbours.
                 .scaleEffect(isHovering && !reduceMotion ? 1.035 : 1)
                 .animation(Theme.settle, value: isHovering)
+                .animation(Theme.settle, value: isSelected)
 
+            // Subordinate to the cover: the name in the standard row size and
+            // the store line a step quieter, so the art is read first.
             VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
                 Text(game.name)
                     .font(Theme.rowTitleFont)
@@ -404,26 +482,32 @@ private struct GameCard: View {
                     .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // A game that will not run also reads as dimmer in text.
+                    .foregroundStyle(compatibility.isBlocking ? .secondary : .primary)
                 Text(game.subtitle)
                     .font(Theme.rowSubtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .help(game.subtitle.isEmpty ? game.name : "\(game.name) — \(game.subtitle)")
+            .help(compatibility.help(for: game.name, subtitle: game.subtitle))
         }
         .contentShape(Rectangle())
+        // Double first: SwiftUI resolves a count-2 and a count-1 tap on the
+        // same view only when the double is declared before the single.
         .onTapGesture(count: 2) { play() }
+        .onTapGesture(count: 1) { onSelect() }
         .onHover { isHovering = $0 }
         // The hovered card grows and throws a shadow over its neighbours;
         // later siblings in a grid draw on top by default, so the right and
         // lower neighbours were painted over the raised card's edge.
         .zIndex(isHovering ? 1 : 0)
         .task(id: game.id) { await loadArt() }
-        // The play button only exists while the pointer hovers, so it is
+        // The play pill only exists while hovered or selected, so it is
         // unreachable from the keyboard or VoiceOver; this exposes the same
         // action on the card itself.
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityAction(named: "Play") { play() }
         .contextMenu {
             Button("Play") { play() }
@@ -433,6 +517,56 @@ private struct GameCard: View {
             Button("Copy launch command") { copyLaunchCommand() }
                 .disabled(game.launchExe == nil)
         }
+    }
+
+    /// The card's primary action: a labelled pill along the cover's bottom
+    /// edge over a soft scrim. A word beats the old lone glyph circle for
+    /// "what do I click", and the bottom edge leaves the middle of the art
+    /// (and the badge in the corner) unobstructed.
+    ///
+    /// For a `.wontRun` game it is deliberately demoted: neutral dark fill
+    /// instead of the accent, and worded "Play anyway", so the choice to
+    /// launch is still there but is visibly an override. The action is
+    /// unchanged.
+    private var playPill: some View {
+        ZStack(alignment: .bottom) {
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.62)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 84)
+            .allowsHitTesting(false)
+
+            Button(action: play) {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 11, weight: .bold))
+                    Text(compatibility.isBlocking ? "Play anyway" : "Play")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, Theme.Spacing.l)
+                .padding(.vertical, Theme.Spacing.s)
+                .background {
+                    if compatibility.isBlocking {
+                        Capsule().fill(Color.black.opacity(0.7))
+                            .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                    } else {
+                        // `accentButtonFill`, not `accentGradient`: the
+                        // label is white, and only the button stops are
+                        // guaranteed 4.8:1 against it along the whole width.
+                        Capsule().fill(themeStore.current.accentButtonFill)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(game.launchExe == nil)
+            .padding(.bottom, Theme.Spacing.m)
+            .help(compatibility.isBlocking ? "Play anyway \u{2014} \(compatibility.detail)" : "Play")
+            .accessibilityLabel("Play \(game.name)")
+        }
+        .transition(.opacity)
     }
 
     @ViewBuilder
@@ -453,7 +587,7 @@ private struct GameCard: View {
         ZStack {
             themeStore.current.accentGradient
             Text(PlaceholderArt.monogram(for: game.name))
-                .font(Theme.titleFont(26, weight: .bold))
+                .font(Theme.titleFont(34, weight: .bold))
                 .foregroundStyle(.white.opacity(0.92))
         }
     }
@@ -487,36 +621,53 @@ private struct GameCard: View {
 
 // MARK: - Game row (list mode)
 
+/// The list-mode counterpart of `GameCard`, kept coherent with it: same
+/// selection model, same rule that only a noteworthy rating is shown (as an
+/// inline badge beside the name, the way Programs shows its "System" chip),
+/// and the same demotion of Play for a `.wontRun` game.
 private struct GameRow: View {
     @Environment(AppState.self) private var appState
     @Environment(ThemeStore.self) private var themeStore
     let game: InstalledGame
     let bottle: Bottle
+    let compatibility: Compatibility
+    let isSelected: Bool
+    let onSelect: () -> Void
     @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: Theme.Spacing.m) {
-            Image(systemName: "gamecontroller.fill")
+            // A will-not-run game swaps the controller glyph for the same
+            // symbol its badge uses, in the danger ink, so the problem is
+            // visible down the left edge of a long list, not only in a badge
+            // that may be scanned past.
+            Image(systemName: compatibility.isBlocking ? compatibility.systemImage : "gamecontroller.fill")
                 .font(Theme.rowTitleFont)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(compatibility.isBlocking ? Theme.Tone.danger.ink : Color.secondary)
                 .frame(width: 16)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
-                Text(game.name)
-                    .font(Theme.rowTitleFont)
-                    .lineLimit(1)
+                HStack(spacing: Theme.Spacing.compact) {
+                    Text(game.name)
+                        .font(Theme.rowTitleFont)
+                        .foregroundStyle(compatibility.isBlocking ? .secondary : .primary)
+                        .lineLimit(1)
+                    if compatibility.isNoteworthy {
+                        CompatibilityBadge(compatibility: compatibility, style: .inline)
+                    }
+                }
                 Text(game.subtitle)
                     .font(Theme.rowSubtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .help(game.subtitle.isEmpty ? game.name : "\(game.name) — \(game.subtitle)")
+            .help(compatibility.help(for: game.name, subtitle: game.subtitle))
 
             Spacer(minLength: Theme.Spacing.m)
 
-            if isHovering {
+            if isHovering || isSelected {
                 Button(action: play) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 11))
@@ -526,18 +677,21 @@ private struct GameRow: View {
                 .controlSize(.small)
                 .fixedSize()
                 .disabled(game.launchExe == nil)
-                .help("Play")
+                .help(compatibility.isBlocking ? "Play anyway \u{2014} \(compatibility.detail)" : "Play")
                 .accessibilityLabel("Play \(game.name)")
             }
         }
         .padding(.horizontal, Theme.Spacing.m)
         .frame(height: Theme.Metrics.listRow)
-        // A faint wash under the pointer so a row reads as "this one" before
-        // the play button has had a chance to catch the eye (matches the
-        // Programs rows). 0.05 is the same primary-colour wash the quiet
+        // Selection tint, then a faint hover wash (matches the Programs
+        // rows). Selection wins over hover so the accent stays the one
+        // strong signal. 0.05 is the same primary-colour wash the quiet
         // button style uses for its resting fill.
         .background {
-            if isHovering {
+            if isSelected {
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(themeStore.current.badgeTint.opacity(Theme.Opacity.wash))
+            } else if isHovering {
                 // Rounded like the Programs rows' wash, so it does not poke
                 // out of the list card's corners on the first and last row.
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
@@ -546,9 +700,11 @@ private struct GameRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { play() }
+        .onTapGesture(count: 1) { onSelect() }
         .onHover { isHovering = $0 }
         // Hover-only play button: same keyboard/VoiceOver route as GameCard.
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityAction(named: "Play") { play() }
         .contextMenu {
             Button("Play") { play() }

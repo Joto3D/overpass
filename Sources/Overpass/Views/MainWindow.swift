@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Top-level split view: bottles + Engines + Settings in the sidebar, the
+/// Top-level split view: bottles + Install app / Engines / Settings in the sidebar, the
 /// selected item's detail on the right. Detail views are provided by the
 /// feature files (BottleDetailView, EnginesView, SettingsView). Also owns
 /// startup loading, the New Bottle sheet, the first-run setup wizard, and
@@ -32,6 +32,20 @@ struct MainWindow: View {
                     }
                     ForEach(appState.bottles) { bottle in
                         BottleSidebarRow(bottle: bottle, engine: appState.engine(for: bottle))
+                            // A launcher should show what is running without
+                            // opening each bottle. Added here, as an overlay,
+                            // so the shared row in Components.swift is
+                            // untouched; the word is the accessibility label
+                            // and tooltip, so the dot is not the only signal.
+                            .overlay(alignment: .trailing) {
+                                if appState.runs.contains(where: { $0.bottleID == bottle.id && $0.isRunning }) {
+                                    Circle()
+                                        .fill(Theme.Tone.success.ink)
+                                        .frame(width: Theme.Spacing.s, height: Theme.Spacing.s)
+                                        .help("Running")
+                                        .accessibilityLabel("Running")
+                                }
+                            }
                             .tag(AppState.SidebarItem.bottle(bottle.id))
                             .contextMenu {
                                 Button("Delete…", role: .destructive) {
@@ -56,7 +70,10 @@ struct MainWindow: View {
                         .frame(height: Theme.Metrics.row)
                         .tag(AppState.SidebarItem.settings)
                 } header: {
-                    SidebarSectionHeader(title: "Library")
+                    // Was "Library", but the bottles' games are the library
+                    // now (the bottle screen opens on them), and these three
+                    // rows are app-level tools, not content.
+                    SidebarSectionHeader(title: "Manage")
                 }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 230)
@@ -75,7 +92,12 @@ struct MainWindow: View {
             switch appState.selection {
             case .bottle(let id):
                 if let bottle = appState.bottles.first(where: { $0.id == id }) {
+                    // `.id` gives each bottle a fresh detail view, so it opens
+                    // on its own landing (games if it has any) in library
+                    // mode instead of inheriting the previous bottle's tab,
+                    // or being left inside Configure.
                     BottleDetailView(bottleID: bottle.id)
+                        .id(bottle.id)
                 } else {
                     ContentUnavailableView("Bottle not found", systemImage: "questionmark.circle")
                 }
@@ -104,8 +126,10 @@ struct MainWindow: View {
                         }
                     }
                 } else {
+                    // Bottles exist here, so "Create a bottle" was the wrong
+                    // instruction; the next step is to pick one.
                     ContentUnavailableView("Select a bottle", systemImage: "cylinder",
-                                           description: Text("Create a bottle to run Windows programs."))
+                                           description: Text("Choose a bottle in the sidebar to see its games and programs."))
                 }
             }
         }
