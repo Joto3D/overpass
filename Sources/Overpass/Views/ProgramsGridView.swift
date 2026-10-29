@@ -61,14 +61,31 @@ struct ProgramsGridView: View {
             // element for every row, which recomputed it n+1 times.
             let pins = filteredPins
             VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-                toolbar(bottle)
+                // Search/filter have nothing to act on over an empty bottle,
+                // and Rescan/Add are offered by the empty state itself, so
+                // the strip appears only once there is a list to work on.
+                if !bottle.pins.isEmpty {
+                    toolbar(bottle, shown: pins.count)
+                }
 
                 if isMigrating {
                     InlineProgress(text: "Updating program list\u{2026}")
                 }
 
                 if bottle.pins.isEmpty {
-                    EmptyStateMessage("Drop an .exe here, or use Run .exe\u{2026}, to pin your first program.")
+                    LibraryEmptyState(
+                        systemImage: "app.dashed",
+                        title: "No programs yet",
+                        message: "Drop an .exe onto this window, or add one, to pin it here. Programs you install into this bottle show up after a rescan."
+                    ) {
+                        Button("Add program\u{2026}") { addProgram(bottle) }
+                            .buttonStyle(.accentCompact)
+                        Button("Rescan") { Task { await rescan(bottle) } }
+                            .buttonStyle(.quietCompact)
+                            .disabled(isScanning)
+                        Button("Install an app\u{2026}") { appState.selection = .installApps }
+                            .buttonStyle(.quietCompact)
+                    }
                 } else if pins.isEmpty {
                     // `defaultVisiblePins` promises not to come back empty
                     // while `bottle.pins` isn't, but if it ever does, an empty
@@ -111,9 +128,22 @@ struct ProgramsGridView: View {
 
     // MARK: - Toolbar
 
-    private func toolbar(_ bottle: Bottle) -> some View {
+    private func toolbar(_ bottle: Bottle, shown: Int) -> some View {
         HStack(spacing: Theme.Spacing.s) {
+            // Capped, with the controls pushed to the trailing edge, so the
+            // list rather than a full-width search box is the heaviest thing
+            // on the screen (same treatment as the Games toolbar).
             ToolbarSearchField(prompt: "Search programs", text: $searchText)
+                .frame(maxWidth: 280)
+
+            Spacer(minLength: Theme.Spacing.m)
+
+            // Counts what is listed, not what was scanned: the default
+            // filters hide system and helper entries.
+            Text(countCaption(shown: shown, total: visiblePins.count, noun: "program"))
+                .font(Theme.rowSubtitleFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
             if isScanning {
                 ProgressView().controlSize(.small)
@@ -333,6 +363,13 @@ private struct ProgramRow: View {
             if isSelected {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                     .fill(themeStore.current.badgeTint.opacity(Theme.Opacity.wash))
+            } else if isHovering {
+                // A faint wash under the pointer (same value as the Games
+                // list rows) so the row announces itself before its play
+                // button does. Selection wins over hover: the accent tint
+                // must stay the one strong signal.
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
             }
         }
         .contentShape(Rectangle())

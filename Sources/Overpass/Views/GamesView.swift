@@ -51,6 +51,10 @@ struct GamesView: View {
         return result.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
+    /// How far a hovered card's scale and shadow reach past its resting
+    /// frame (see the grid's padding).
+    private let gridBleed = Theme.Spacing.m
+
     var body: some View {
         if let bottle {
             // Evaluated once per render: filtering runs a substring search
@@ -58,12 +62,32 @@ struct GamesView: View {
             // last element again for every row.
             let shownGames = filteredGames
             VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-                toolbar(bottle)
+                // The search/filter/view-mode strip only earns its place
+                // once there is a library to search. Over an empty library
+                // (still scanning for the first time, or nothing found) it
+                // was four dead controls above a message; the empty states
+                // below carry the one control that matters, Rescan.
+                if !games.isEmpty {
+                    toolbar(bottle, shown: shownGames.count)
+                }
 
                 if !hasScannedOnce && isScanning {
                     EmptyStateMessage("Scanning for games\u{2026}", showsProgress: true)
                 } else if games.isEmpty {
-                    EmptyStateMessage("No games found — install one through Steam, GOG Galaxy or Epic in this bottle.")
+                    LibraryEmptyState(
+                        systemImage: "gamecontroller",
+                        title: "No games found",
+                        message: "Overpass looks for games installed by Steam, GOG Galaxy or Epic inside this bottle. Install a launcher, add a game through it, then rescan."
+                    ) {
+                        if isScanning {
+                            InlineProgress(text: "Scanning for games\u{2026}")
+                        }
+                        Button("Rescan games") { Task { await rescan(bottle) } }
+                            .buttonStyle(.accentCompact)
+                            .disabled(isScanning)
+                        Button("Install a launcher\u{2026}") { appState.selection = .installApps }
+                            .buttonStyle(.quietCompact)
+                    }
                 } else if shownGames.isEmpty {
                     // The search box can be empty here (the store filter alone
                     // emptied the list), where "No games match “”." read as a
@@ -75,15 +99,47 @@ struct GamesView: View {
                     }
                 } else if viewMode == .grid {
                     ScrollView {
+                        // Alignment `.top` on the column: rows are as tall
+                        // as their tallest card, and the default (.center)
+                        // floated a shorter card's cover down by half the
+                        // difference, so covers in one row did not share a
+                        // top edge. (The title also reserves two lines now,
+                        // so heights normally match anyway; this is the
+                        // belt to that pair of braces.)
+                        //
+                        // `maximum` caps the card width: with an unbounded
+                        // adaptive column a wide window made a handful of
+                        // games into a few enormous 2:3 covers. Leading
+                        // alignment keeps a short last row against the left
+                        // edge instead of centring it under the others.
                         LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.Spacing.l)],
+                            columns: [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: Theme.Spacing.l, alignment: .top)],
+                            alignment: .leading,
                             spacing: Theme.Spacing.l
                         ) {
                             ForEach(shownGames) { game in
                                 GameCard(game: game, bottle: bottle)
                             }
                         }
+                        // Headroom for the hover treatment. A ScrollView clips
+                        // to its bounds, and a hovered card grows 3.5% and
+                        // casts a 10pt shadow (offset 5pt down), so edge cards
+                        // were shaved on the left, right and top, and the last
+                        // row on the bottom. 12pt covers the side and top
+                        // overhang; the bottom takes 16 for the offset shadow.
+                        .padding(.horizontal, gridBleed)
+                        .padding(.top, gridBleed)
+                        .padding(.bottom, Theme.Spacing.l)
                     }
+                    // The padding above would push the covers 12pt in from the
+                    // search field's edge. Widening the scroll view by the same
+                    // amount (it just extends into the screen's 20pt outer
+                    // padding) puts the first card flush with the toolbar and
+                    // the scroller at the window edge. The top is pulled up into
+                    // the 12pt gap under the toolbar, so the net gap stays at
+                    // 16 rather than doubling up.
+                    .padding(.horizontal, -gridBleed)
+                    .padding(.top, -Theme.Spacing.s)
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
@@ -115,9 +171,23 @@ struct GamesView: View {
 
     // MARK: - Toolbar
 
-    private func toolbar(_ bottle: Bottle) -> some View {
+    private func toolbar(_ bottle: Bottle, shown: Int) -> some View {
         HStack(spacing: Theme.Spacing.s) {
+            // Capped: stretched across the whole window the field was the
+            // widest, heaviest thing on a screen whose subject is the
+            // covers. The spacer + count then push the view controls to
+            // the trailing edge, where they read as controls, not content.
             ToolbarSearchField(prompt: "Search games", text: $searchText)
+                .frame(maxWidth: 280)
+
+            Spacer(minLength: Theme.Spacing.m)
+
+            // A quiet library total, so the grid below has a sense of scale
+            // ("3 of 12" also explains a filter that is hiding games).
+            Text(countCaption(shown: shown, total: games.count, noun: "game"))
+                .font(Theme.rowSubtitleFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
             if isScanning {
                 ProgressView().controlSize(.small)
@@ -200,6 +270,69 @@ struct GamesView: View {
     }
 }
 
+/// "12 games", or "3 of 12 games" while a search/filter is hiding some —
+/// the quiet total beside a library toolbar. Shared with Programs.
+func countCaption(shown: Int, total: Int, noun: String) -> String {
+    let plural = total == 1 ? noun : noun + "s"
+    return shown == total ? "\(total) \(plural)" : "\(shown) of \(total) \(plural)"
+}
+
+// MARK: - Library empty state
+
+/// What a library screen shows when it has nothing at all (as opposed to
+/// nothing *matching*, which stays the quiet `EmptyStateMessage`): a glyph,
+/// a one-line title, a sentence on what will fill the screen, and the
+/// actions that get the user there. Centred in the space below the header
+/// rather than hung from the top, so a new bottle's first Games/Programs
+/// view looks designed instead of unfinished.
+///
+/// Built only from existing tokens. The caller supplies the buttons (it
+/// owns the actions) — conventionally an `.accentCompact` primary first,
+/// then `.quietCompact` alternatives.
+struct LibraryEmptyState<Actions: View>: View {
+    @Environment(ThemeStore.self) private var themeStore
+    private let systemImage: String
+    private let title: String
+    private let message: String
+    private let actions: Actions
+
+    // Explicit: a memberwise init would be private because of the private
+    // properties, and would not apply @ViewBuilder to `actions`.
+    init(systemImage: String, title: String, message: String, @ViewBuilder actions: () -> Actions) {
+        self.systemImage = systemImage
+        self.title = title
+        self.message = message
+        self.actions = actions()
+    }
+
+    var body: some View {
+        VStack(spacing: Theme.Spacing.m) {
+            Image(systemName: systemImage)
+                .font(.system(size: 36, weight: .light))
+                .foregroundStyle(themeStore.current.accentGradient)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(Theme.headingFont(17))
+            Text(message)
+                .font(Theme.rowTitleFont)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                // Narrow measure: a two-line paragraph reads better than a
+                // 700pt run of text in a wide window.
+                .frame(maxWidth: 380)
+            HStack(spacing: Theme.Spacing.s) {
+                actions
+            }
+            .padding(.top, Theme.Spacing.xs)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Optical centre: true centre of a tall pane looks low.
+        .padding(.bottom, Theme.Spacing.xl * 2)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 /// Grid vs. list, remembered via `@AppStorage("overpass.games.viewMode")`.
 enum GamesViewMode: String {
     case grid, list
@@ -217,6 +350,7 @@ private struct GameCard: View {
     @Environment(ThemeStore.self) private var themeStore
     let game: InstalledGame
     let bottle: Bottle
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var image: NSImage?
     @State private var isHovering = false
 
@@ -250,14 +384,24 @@ private struct GameCard: View {
                     }
                 }
                 .shadow(color: .black.opacity(isHovering ? 0.32 : 0.14), radius: isHovering ? 10 : 4, y: isHovering ? 5 : 2)
-                .scaleEffect(isHovering ? 1.035 : 1)
+                // The shadow and the play overlay already say "this one";
+                // the grow is dropped for people who asked the system for
+                // less motion.
+                .scaleEffect(isHovering && !reduceMotion ? 1.035 : 1)
                 .animation(Theme.settle, value: isHovering)
 
             VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
                 Text(game.name)
                     .font(Theme.rowTitleFont)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
+                    // Always two lines tall, tail-truncated beyond that (the
+                    // tooltip below has the full name). The old
+                    // `minimumScaleFactor(0.75)` shrank only the long names, so
+                    // one grid showed titles at two different sizes; and a
+                    // one-line title left its card shorter than its row
+                    // neighbours. Reserving the space keeps every cover in a
+                    // row the same size and the same distance from its title.
+                    .lineLimit(2, reservesSpace: true)
+                    .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(game.subtitle)
@@ -271,6 +415,10 @@ private struct GameCard: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { play() }
         .onHover { isHovering = $0 }
+        // The hovered card grows and throws a shadow over its neighbours;
+        // later siblings in a grid draw on top by default, so the right and
+        // lower neighbours were painted over the raised card's edge.
+        .zIndex(isHovering ? 1 : 0)
         .task(id: game.id) { await loadArt() }
         // The play button only exists while the pointer hovers, so it is
         // unreachable from the keyboard or VoiceOver; this exposes the same
@@ -384,6 +532,18 @@ private struct GameRow: View {
         }
         .padding(.horizontal, Theme.Spacing.m)
         .frame(height: Theme.Metrics.listRow)
+        // A faint wash under the pointer so a row reads as "this one" before
+        // the play button has had a chance to catch the eye (matches the
+        // Programs rows). 0.05 is the same primary-colour wash the quiet
+        // button style uses for its resting fill.
+        .background {
+            if isHovering {
+                // Rounded like the Programs rows' wash, so it does not poke
+                // out of the list card's corners on the first and last row.
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { play() }
         .onHover { isHovering = $0 }

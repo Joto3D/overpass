@@ -124,10 +124,10 @@ struct SidebarSectionHeader: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
             Text(title)
-                .font(Theme.headingFont(11))
+                .font(Theme.labelFont)
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
-                .tracking(0.6)
+                .tracking(Theme.labelTracking)
             if let info {
                 Image(systemName: "info.circle")
                     .font(.caption2)
@@ -288,6 +288,10 @@ struct InlineProgress: View {
 /// into a bug report, and never truncated — the glyph means the message no
 /// longer relies on red alone to read as an error.
 ///
+/// The red is `Theme.Tone.danger`'s ink, not system `.red`: system red as
+/// 11pt type on a light card is ~3.7:1, the ink is >= 5.3:1 in light and
+/// >= 4.7:1 in dark.
+///
 /// Takes the message as it is. Callers pass the already-written error string
 /// straight through; nothing here rewrites or prefixes it.
 struct ErrorText: View {
@@ -306,7 +310,7 @@ struct ErrorText: View {
                 .textSelection(.enabled)
         }
         .font(.caption)
-        .foregroundStyle(.red)
+        .foregroundStyle(Theme.Tone.danger.ink)
     }
 }
 
@@ -317,15 +321,24 @@ struct ErrorText: View {
 /// cabextract hint on Extras. `tint` colors the glyph only; the text stays
 /// secondary so a note reads as information, not an alarm (use `ErrorText`
 /// for a failure that needs to stand out on its own).
+///
+/// Same family as `Chip` and `StatusPillCard`: a tinted note gets the same
+/// soft wash of its tint behind the card (neutral notes get none), and the
+/// glyph uses `Theme.readableInk` so a yellow or orange glyph stays visible
+/// on a light card instead of washing out. The words, not the tint, carry
+/// the message.
 struct InlineNote: View {
+    @Environment(\.colorScheme) private var colorScheme
     let systemImage: String
     var tint: Color = .secondary
     let text: String
 
+    private var isNeutral: Bool { tint == .secondary }
+
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.s) {
             Image(systemName: systemImage)
-                .foregroundStyle(tint)
+                .foregroundStyle(isNeutral ? Color.secondary : Theme.readableInk(tint, in: colorScheme))
                 .accessibilityHidden(true)
             Text(text)
                 .font(.caption)
@@ -335,6 +348,12 @@ struct InlineNote: View {
         }
         .padding(Theme.Spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            if !isNeutral {
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .fill(tint.opacity(Theme.Opacity.softWash))
+            }
+        }
         .overpassCard(cornerRadius: Theme.Radius.row)
     }
 }
@@ -428,6 +447,12 @@ struct OutputBox: View {
         .background {
             RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                 .fill(Color.primary.opacity(0.05))
+                // The hairline edge every other Overpass surface has; the
+                // 5% fill alone left the box's bounds guessable on a card.
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(Theme.Opacity.hairline), lineWidth: 1)
+                }
         }
     }
 }

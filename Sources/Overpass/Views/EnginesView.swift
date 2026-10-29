@@ -18,6 +18,8 @@ struct EnginesView: View {
     @State private var isCheckingUpdates = false
     @State private var updateCheckError: String?
     @State private var lastCheckedAt: Date?
+    /// Id of the derived engine being removed, so only that row spins.
+    @State private var removingUserEngineID: String?
 
     /// Fetched releases not already covered by the built-in catalog or an
     /// installed engine — these get their own "Available" section below.
@@ -50,9 +52,10 @@ struct EnginesView: View {
                     }
                 }
 
+                gptk4Section
+
                 updateStatusNote
                 rosettaNote
-                gptk4Note
             }
             .padding(Theme.Spacing.outer)
             .frame(maxWidth: Theme.Metrics.contentMaxWidth, alignment: .leading)
@@ -125,11 +128,139 @@ struct EnginesView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var gptk4Note: some View {
-        Text("Newest redistributable GPTK is whatever Gcenx has published; Apple's GPTK 4 beta needs an Apple Developer download.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+    // MARK: - Game Porting Toolkit 4 (user-supplied)
+
+    /// Engines derived from a GPTK 4 download the user provided. The rest of
+    /// this screen iterates `EngineCatalog.releases`, so without this these
+    /// engines would be installed, selectable in every bottle picker, and
+    /// invisible on the one screen that manages engines.
+    private var userSuppliedEngines: [InstalledEngine] {
+        appState.installedEngines
+            .filter(EngineCatalog.isUserSupplied)
+            .sorted { $0.id < $1.id }
+    }
+
+    private var gptk4Progress: Double? {
+        appState.engineInstallProgress[EngineCatalog.userSuppliedGPTKProgressKey]
+    }
+
+    private var gptk4Status: String? {
+        appState.engineInstallStatus[EngineCatalog.userSuppliedGPTKProgressKey]
+    }
+
+    /// The only route to `AppState.installGPTKFromUserFile`. Apple keeps the
+    /// GPTK 4 download behind a developer sign-in and its licence forbids
+    /// redistribution, so Overpass cannot fetch it the way it fetches catalog
+    /// engines — the user has to supply the file. Stating that here is the
+    /// point of the section: the capability is otherwise undiscoverable.
+    private var gptk4Section: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
+            SectionHeader(title: "Game Porting Toolkit 4", systemImage: "wand.and.stars")
+
+            Text("Apple's GPTK 4 sits behind an Apple Developer sign-in and may not be redistributed, so Overpass can't download it for you. Point it at the .dmg you downloaded, or the redist/lib folder inside it, and Overpass clones one of your installed Wine engines and overlays the new files onto the copy — the original is left untouched.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            InlineNote(
+                systemImage: "exclamationmark.triangle",
+                tint: .orange,
+                text: "Experimental. The GPTK 4 files do load on Wine-staging 11.20, but regsvr32 d3d11.dll hangs and no game has been confirmed rendering on a derived engine."
+            )
+
+            if let gptk4Progress {
+                VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+                    ProgressView(value: gptk4Progress)
+                    if let gptk4Status {
+                        Text(gptk4Status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(Theme.Spacing.l)
+                .overpassCard()
+            } else {
+                Button {
+                    pickGPTK4Download()
+                } label: {
+                    Label("Use my GPTK 4 download…", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.accentCompact)
+                .help("Choose Apple's GPTK 4 .dmg, or the redist/lib folder from inside it")
+            }
+
+            ForEach(userSuppliedEngines) { engine in
+                userSuppliedRow(engine)
+            }
+
+            Text("The engines above come from Gcenx's published builds; this section is only for Apple's own GPTK 4 download.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// One derived engine: what it was built from, and a way to remove it.
+    /// Shows `sourceName` rather than a path because `UserSuppliedOrigin`
+    /// deliberately keeps only the name — a path can carry a username and is
+    /// useless once the download is deleted.
+    private func userSuppliedRow(_ engine: InstalledEngine) -> some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.m) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                HStack(spacing: Theme.Spacing.s) {
+                    Text(engine.displayName)
+                        .font(Theme.headingFont(16))
+                    Chip(text: "Your download", systemImage: "person.crop.circle", tint: .accentColor)
+                }
+                if let origin = engine.userSupplied {
+                    Text("Built from \(origin.sourceName) on \(origin.baseVersionString).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !origin.signatureVerified {
+                        Text("Apple's code signature was not verified for this install.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Spacer(minLength: Theme.Spacing.s)
+            if removingUserEngineID == engine.id {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Remove") { removeUserSupplied(engine) }
+                    .buttonStyle(.quietCompact)
+            }
+        }
+        .padding(Theme.Spacing.l)
+        .overpassCard()
+    }
+
+    /// Mirrors `importD3DMetal`'s panel, but also accepts a directory: the
+    /// payload Overpass needs is `redist/lib`, and a user who has already
+    /// mounted the dmg and copied that folder out has nothing to point a
+    /// file-only panel at.
+    private func pickGPTK4Download() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Apple's GPTK 4 .dmg or its redist/lib folder"
+        panel.prompt = "Use This"
+        panel.allowedContentTypes = [UTType(filenameExtension: "dmg") ?? .item, .folder]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        Task { await appState.installGPTKFromUserFile(url) }
+    }
+
+    private func removeUserSupplied(_ engine: InstalledEngine) {
+        guard removingUserEngineID == nil else { return }
+        removingUserEngineID = engine.id
+        Task {
+            await appState.removeEngine(engine.id)
+            removingUserEngineID = nil
+        }
     }
 }
 

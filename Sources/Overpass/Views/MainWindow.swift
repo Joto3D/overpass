@@ -16,6 +16,20 @@ struct MainWindow: View {
         NavigationSplitView {
             List(selection: $appState.selection) {
                 Section {
+                    // An empty Bottles section was just a header over
+                    // nothing. This untagged row is not selectable (only
+                    // tagged rows are), says what the section is for, and
+                    // offers the same sheet as the toolbar's Add menu.
+                    if appState.bottles.isEmpty {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+                            Text("No bottles yet")
+                                .font(Theme.rowSubtitleFont)
+                                .foregroundStyle(.secondary)
+                            Button("New bottle\u{2026}") { showNewBottleSheet = true }
+                                .buttonStyle(.quietCompact)
+                        }
+                        .padding(.vertical, Theme.Spacing.s)
+                    }
                     ForEach(appState.bottles) { bottle in
                         BottleSidebarRow(bottle: bottle, engine: appState.engine(for: bottle))
                             .tag(AppState.SidebarItem.bottle(bottle.id))
@@ -72,8 +86,27 @@ struct MainWindow: View {
             case .settings:
                 SettingsView()
             case nil:
-                ContentUnavailableView("Select a bottle", systemImage: "cylinder",
-                                       description: Text("Create a bottle to run Windows programs."))
+                if appState.bottles.isEmpty {
+                    // Nothing to select yet, so "Select a bottle" pointed at
+                    // nothing. Same wording as before for what a bottle is
+                    // for, but with the two ways to get one right here
+                    // (the same two sheets as the sidebar's Add menu).
+                    ContentUnavailableView {
+                        Label("No bottles yet", systemImage: "cylinder")
+                    } description: {
+                        Text("Create a bottle to run Windows programs.")
+                    } actions: {
+                        HStack(spacing: Theme.Spacing.s) {
+                            Button("New bottle\u{2026}") { showNewBottleSheet = true }
+                                .buttonStyle(.accentCompact)
+                            Button("Import bottle\u{2026}") { showImportBottleSheet = true }
+                                .buttonStyle(.quietCompact)
+                        }
+                    }
+                } else {
+                    ContentUnavailableView("Select a bottle", systemImage: "cylinder",
+                                           description: Text("Create a bottle to run Windows programs."))
+                }
             }
         }
         // The window's default/min size is declared on the `Window` scene
