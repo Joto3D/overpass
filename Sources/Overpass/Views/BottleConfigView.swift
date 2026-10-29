@@ -36,10 +36,10 @@ struct BottleConfigView: View {
                     advancedSection(local)
                 }
                 .formStyle(.grouped)
-                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: Theme.Metrics.contentMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                emptyState
+                ContentUnavailableView("Bottle not found", systemImage: "questionmark.circle")
             }
         }
         .onAppear { local = storedBottle }
@@ -64,29 +64,35 @@ struct BottleConfigView: View {
             // Same trade-off wording the Engines screen and the new-bottle
             // sheet show, so the choice reads identically wherever it's made.
             if let engine {
-                Text(engineTradeoffCaption(for: engine.kind))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                EngineTradeoffNote(kind: engine.kind)
             }
 
-            Picker("Windows Version", selection: binding(\.windowsVersion)) {
+            Picker("Windows version", selection: binding(\.windowsVersion)) {
                 ForEach(WindowsVersion.allCases) { version in
                     Text(version.displayName).tag(version)
                 }
             }
+            // Disabled mid-apply so a second pick can't start another
+            // `winecfg` before the first has said whether it worked.
+            .disabled(isApplyingWindowsVersion)
             .onChange(of: bottle.windowsVersion) { _, newValue in
-                save()
+                // Deliberately does NOT save here. The value is saved only
+                // once `winecfg` has actually switched the prefix (see
+                // `applyWindowsVersion`); saving first is how a bottle came
+                // to claim "Windows 7" while its prefix was still Windows 10.
+                //
+                // The comparison against the *stored* bottle also filters
+                // out changes that aren't the user picking something: this
+                // handler fires whenever `local` is replaced (switching
+                // bottles, or `applyWindowsVersion` rolling back a failed
+                // pick), and in all of those the stored value already
+                // equals the new one, so there is nothing to apply.
+                guard newValue != storedBottle?.windowsVersion else { return }
                 applyWindowsVersion(newValue)
             }
 
             if isApplyingWindowsVersion {
-                HStack(spacing: Theme.Spacing.s) {
-                    ProgressView().controlSize(.small)
-                    Text("Applying Windows version\u{2026}")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                InlineProgress(text: "Applying Windows version\u{2026}")
             }
         }
     }
@@ -104,7 +110,7 @@ struct BottleConfigView: View {
 
     private func displaySection(_ bottle: Bottle) -> some View {
         Section("Display") {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 Toggle("Run programs in a virtual desktop", isOn: binding(\.virtualDesktop))
                     .onChange(of: bottle.virtualDesktop) { _, _ in save() }
                 Text("Fixes windows that render black or never appear.")
@@ -133,22 +139,28 @@ struct BottleConfigView: View {
 
     private func environmentSection(_ bottle: Bottle) -> some View {
         Section("Environment") {
+            if bottle.env.isEmpty {
+                Text("No custom environment variables.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             ForEach(sortedEnvKeys(bottle), id: \.self) { key in
                 HStack {
                     Text(key)
                         .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
                     Spacer()
+                    // Middle-truncated to keep the row one line; the tooltip
+                    // and text selection give the full value back.
                     Text(bottle.env[key] ?? "")
                         .font(.system(.body, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Button(role: .destructive) {
-                        removeEnv(key)
-                    } label: {
-                        Image(systemName: "minus.circle")
-                    }
-                    .buttonStyle(.borderless)
+                        .help(bottle.env[key] ?? "")
+                        .textSelection(.enabled)
+                    RemoveRowButton(name: key) { removeEnv(key) }
                 }
             }
 
@@ -177,27 +189,25 @@ struct BottleConfigView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(bottle.prefixDir.path)
+                        .textSelection(.enabled)
                     Button {
                         copyToClipboard(bottle.prefixDir.path)
                     } label: {
                         Image(systemName: "doc.on.doc")
+                            .frame(width: Theme.Metrics.iconButton, height: Theme.Metrics.iconButton)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .help("Copy prefix path")
+                    .accessibilityLabel("Copy prefix path")
                 }
             }
 
-            Button("Kill All Processes", role: .destructive) {
+            Button("Kill all processes", role: .destructive) {
                 Task { await appState.stopAll(in: bottle) }
             }
         }
-    }
-
-    private var emptyState: some View {
-        Text("Bottle not found.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     // MARK: - Helpers
@@ -218,17 +228,58 @@ struct BottleConfigView: View {
         appState.updateBottle(local)
     }
 
+    /// Switches the prefix to `version` and records it on the bottle only
+    /// if that worked. The bottle's stored `windowsVersion` is what the UI
+    /// shows and what the next launch assumes about the prefix, so it must
+    /// never run ahead of what `winecfg` actually did. The previous value
+    /// is the stored one (captured before anything is written); on any
+    /// failure the picker and the stored bottle are both put back to it,
+    /// so the model matches reality and the user sees the pick undone
+    /// alongside the error explaining why.
     private func applyWindowsVersion(_ version: WindowsVersion) {
-        guard let local, let engine else { return }
+        guard let local, let previous = storedBottle?.windowsVersion else { return }
+        let bottleID = local.id
+
+        guard let engine else {
+            // Used to be a silent `return`: the picker moved, the version
+            // was saved, and nothing was ever applied.
+            restoreWindowsVersion(previous, forBottle: bottleID)
+            appState.report("Couldn't change the Windows version: this bottle's engine isn't installed. Install it from the Engines screen, or pick a different engine for this bottle, then try again.")
+            return
+        }
+
         isApplyingWindowsVersion = true
         Task {
             defer { isApplyingWindowsVersion = false }
             do {
                 try await WineRunner.applyWindowsVersion(version, bottle: local, engine: engine)
+                recordWindowsVersion(version, forBottle: bottleID)
             } catch {
-                appState.report(error, context: "Applying \(version.displayName)")
+                restoreWindowsVersion(previous, forBottle: bottleID)
+                appState.report(error, context: "Applying \(version.displayName) (the bottle is still set to \(previous.displayName))")
             }
         }
+    }
+
+    /// Saves `version` as the bottle's Windows version, writing it through
+    /// the stored bottle (looked up by id, since the user may have
+    /// switched bottles while `winecfg` ran) and mirroring it into `local`
+    /// if that is still the same bottle.
+    private func recordWindowsVersion(_ version: WindowsVersion, forBottle id: UUID) {
+        if var stored = appState.bottles.first(where: { $0.id == id }) {
+            stored.windowsVersion = version
+            appState.updateBottle(stored)
+        }
+        if local?.id == id { local?.windowsVersion = version }
+    }
+
+    /// Undoes a Windows-version pick that wasn't applied: writes
+    /// `previous` back to the stored bottle and re-saves it. The re-save
+    /// matters even though the pick wasn't saved at the time: any other
+    /// field edited while `winecfg` was running saves all of `local`,
+    /// which at that point already carried the unapplied version.
+    private func restoreWindowsVersion(_ previous: WindowsVersion, forBottle id: UUID) {
+        recordWindowsVersion(previous, forBottle: id)
     }
 
     /// The picker's selection: one of the presets, or `customVirtualDesktopSizeTag`

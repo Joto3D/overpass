@@ -25,6 +25,14 @@ proprietary and nothing phones home.
 - **Programs** — Overpass scans a bottle's Start Menu, Desktop, and
   `Program Files` for installed programs and turns them into a launchable
   grid; pin your own too.
+- **Fixes** — a per-game fix database in the spirit of Proton's
+  `protonfixes`. Launch a program Overpass knows about and it applies
+  that program's documented recipe — Winetricks verbs, registry keys,
+  Windows version, environment variables, launch arguments — once per
+  bottle, with nothing to configure. Where a program is known *not* to
+  work, it says so up front instead of leaving you watching a window that
+  never opens. Add your own by dropping a JSON file in. See
+  [Fixes](#fixes).
 - **Performance** — per-bottle tuning presets and advanced Wine/Metal
   settings (threading, FSR/MetalFX upscaling, frame pacing) for squeezing
   more out of games.
@@ -79,6 +87,70 @@ it plans to remove most of Rosetta 2 starting with macOS 28 (expected
 version ships then. Overpass keeps engine selection behind an `Engine`
 abstraction specifically so a native arm64 build (once one exists) can be
 added as a single new catalog entry rather than a rewrite.
+
+## Fixes
+
+Some Windows programs need a particular nudge before they run under Wine —
+a font package, a registry value, a launch flag. Overpass keeps those
+recipes in a database and applies them for you, so you don't have to know
+they exist.
+
+A fix matches on a program's executable name. The slow parts (Winetricks
+verbs above all) run once per bottle and are then recorded, so they never
+repeat. Environment variables and launch arguments are re-applied on every
+launch, which means removing a fix removes its effects with nothing left
+behind.
+
+### Advisories
+
+Not every finding is a fix. Some programs cannot work under Wine on macOS
+at all, and the most useful thing a database can do is say so *before* you
+spend twenty minutes installing one. Those entries carry an advisory
+instead of a recipe:
+
+| Severity | Meaning | Example |
+|---|---|---|
+| `wontRun` | No bottle setting can make this work. | Ubisoft Connect needs engine-level support that only CrossOver has. |
+| `degraded` | Runs, with a limitation worth knowing first. | Counter-Strike 2 plays, but VAC keeps compatibility layers off its secure servers. |
+| `info` | Runs fine — there's simply a better route. | No Man's Sky ships a native Mac build, and its Windows build renders with Vulkan, which D3DMetal can't translate. |
+
+`wontRun` and `degraded` are surfaced in the app. `info` goes to the run
+log — worth recording, not worth interrupting for.
+
+### Adding your own
+
+Drop a `.json` file into `~/Library/Application Support/Overpass/Fixes/`.
+Each file holds one fix or an array of them, and only the fields you
+actually need:
+
+```json
+{
+  "id": "example-game",
+  "name": "Example Game",
+  "executables": ["example.exe"],
+  "winetricks": ["vcrun2019"],
+  "notes": "Black screen on startup without vcrun2019.",
+  "source": "https://www.pcgamingwiki.com/wiki/Example_Game"
+}
+```
+
+A user fix with the same `id` as a built-in one replaces it, so anything
+that ships can be overridden. A malformed file is skipped rather than
+breaking the rest of the database.
+
+### The sourcing rule
+
+Every built-in fix cites a public source, and the test suite fails the
+build if one doesn't. A fix without a source is folklore, and a wrong
+Winetricks verb costs minutes of install time in every bottle it touches,
+for everyone.
+
+The fix data is public domain (CC0 — see [LICENSE-FIXES](LICENSE-FIXES)),
+separately from the GPL code, so recipes can move freely between projects.
+The flip side is that entries must **not** be copied out of a GPL fix
+database such as umu-protonfixes or proton-ge: that expression can't be
+relicensed as public domain. Read the underlying fact from a public source
+and write the entry yourself, citing it.
 
 ## Troubleshooting
 
@@ -145,6 +217,7 @@ Everything Overpass manages lives under
 | `Bottles/` | Wine prefixes (`WINEPREFIX`), one folder per bottle, each with its own `drive_c` and `metadata.json`. |
 | `Logs/` | One log file per run, grouped by bottle. |
 | `Tools/` | Helper downloads: the `winetricks` script, DXVK archives, engine tarballs (removed after install). |
+| `Fixes/` | Your own per-game fixes, as `.json` files. Merged over the built-in ones by `id`. Overpass only ever reads this folder. |
 
 Deleting a bottle moves its folder to the Trash, not a permanent delete —
 recoverable until you empty it.
@@ -161,8 +234,54 @@ Overpass is a thin, native front end over other people's excellent work:
   D3DMetal, distributed under Apple's non-commercial licence.
 - [Winetricks](https://github.com/Winetricks/winetricks) — the verb
   installer behind the Extras tab.
-- [DXVK-macOS](https://github.com/Gcenx/DXVK-macOS) — the DXVK build
-  Overpass installs for the DirectX-over-DXVK option.
+- [DXVK](https://github.com/doitsujin/dxvk) — the DirectX-over-Vulkan
+  translation layer Overpass installs for the DXVK option.
 
 Overpass is not affiliated with Wine, Apple, CodeWeavers, or the original
 Whisky project.
+
+## Licence
+
+Overpass is free software, licensed under the **GNU General Public
+Licence, version 3 or later**. The full text is in [LICENSE](LICENSE).
+
+    Copyright (C) 2026 Joshua
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+The GPL covers Overpass's own source. It does **not** cover the engines
+Overpass downloads at runtime and never redistributes: Wine is LGPL-2.1+,
+and Apple's D3DMetal comes under Apple's non-commercial licence, which you
+accept when you install the Game Porting Toolkit engine. Keeping engines
+out of this repository (see `AGENTS.md`) is what keeps that boundary
+clean.
+
+### The fix database is public domain
+
+The per-game fix **data** — every `GameFix`'s executables, winetricks
+verbs, registry entries, notes and sources — is dedicated to the public
+domain under **CC0 1.0**, separately from the code. See
+[LICENSE-FIXES](LICENSE-FIXES).
+
+A fix recipe is a statement of fact, and facts belong to everybody. The
+dedication exists so these recipes can move freely in both directions
+between Overpass and projects whose licences are otherwise incompatible
+with each other.
+
+The flip side, stated plainly: because the data is CC0 rather than GPL,
+entries may **not** be copied out of a GPL fix database (umu-protonfixes,
+Bridgeplay, proton-ge) or a proprietary one. Read the underlying fact from
+a public source and write the entry yourself, citing it. Every built-in
+fix was produced that way, and `source` is mandatory — the self-test fails
+the build on a fix that cites nothing.

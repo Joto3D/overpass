@@ -39,9 +39,18 @@ struct ExtrasView: View {
 
                 cabextractNote
             }
-            .padding(Theme.Spacing.xl)
-            .frame(maxWidth: 720, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            // No padding here and left-aligned, to match Performance and the
+            // list tabs: `BottleDetailView` already insets the tab area by
+            // `Theme.Spacing.outer`, and the extra 24pt (plus centering on
+            // wide windows) put this tab's content out of line with them.
+            // Cards draw their border inside their own bounds, so nothing is
+            // clipped at the scroll view's edge. The second frame is what
+            // actually pins the capped column to the left: a ScrollView
+            // centres content narrower than itself, so with only the first
+            // frame this tab sat in the middle of a wide window. Same pair
+            // as Config's form.
+            .frame(maxWidth: Theme.Metrics.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -58,7 +67,7 @@ struct ExtrasView: View {
                         Task { await runner.setDXVK(newValue, bottle: bottle, engine: engine, appState: appState) }
                     }
                 )) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                         Text("Use DXVK for DirectX 9/10/11")
                             .font(Theme.headingFont(14))
                         Text(dxvkExplanation(engine: engine))
@@ -70,12 +79,7 @@ struct ExtrasView: View {
                 .disabled(!engine.kind.supportsDXVK || runner.isBusy)
 
                 if runner.isBusy, runner.currentOperation == "DXVK" {
-                    HStack(spacing: Theme.Spacing.s) {
-                        ProgressView().controlSize(.small)
-                        Text(runner.statusLine ?? "Working…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    InlineProgress(text: runner.statusLine ?? "Working…")
                 }
             }
         }
@@ -85,7 +89,7 @@ struct ExtrasView: View {
 
     private func dxvkExplanation(engine: InstalledEngine) -> String {
         if engine.kind.supportsDXVK {
-            return "Installs Gcenx's DXVK-macOS build into this bottle's system32, translating DirectX 9/10/11 over Vulkan instead of Wine's built-in translation. Safe to toggle at any time; the original DLLs are backed up and restored."
+            return "Installs upstream DXVK into this bottle's system32, translating DirectX 8/9/10/11 over Vulkan instead of Wine's built-in translation. Safe to toggle at any time; the original DLLs are backed up and restored."
         } else {
             return "\(engine.kind.displayName) already includes Apple's D3DMetal, which translates DirectX 11/12 straight to Metal — DXVK isn't needed here."
         }
@@ -107,7 +111,7 @@ struct ExtrasView: View {
                         Task { await runner.setD3DMetalOverlay(newValue, bottle: bottle, gptk: gptk, appState: appState) }
                     }
                 )) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                         Text("Layer D3DMetal onto this bottle")
                             .font(Theme.headingFont(14))
                         Text("Apple's DirectX 11/12 to Metal translation, layered onto modern Wine — the same approach CrossOver uses.")
@@ -128,12 +132,7 @@ struct ExtrasView: View {
                 .disabled(gptk == nil || runner.isBusy)
 
                 if runner.isBusy, runner.currentOperation == "D3DMetal" {
-                    HStack(spacing: Theme.Spacing.s) {
-                        ProgressView().controlSize(.small)
-                        Text(runner.statusLine ?? "Working…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    InlineProgress(text: runner.statusLine ?? "Working…")
                 }
             }
         }
@@ -196,7 +195,7 @@ struct ExtrasView: View {
     }
 
     private func verbCell(_ item: (verb: String, title: String, blurb: String), bottle: Bottle, engine: InstalledEngine) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             Button(item.title) {
                 Task {
                     await runner.runVerb(item.verb, title: item.title, bottle: bottle, engine: engine, appState: appState)
@@ -206,11 +205,13 @@ struct ExtrasView: View {
             .controlSize(.small)
             .disabled(runner.isBusy)
 
+            // Was `.lineLimit(1)` with tail truncation, which cut longer
+            // blurbs off mid-sentence with no way to read the rest. It
+            // wraps now; the two-column grid tolerates uneven cell heights.
             Text(item.blurb)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -224,7 +225,7 @@ struct ExtrasView: View {
     }
 
     private var outputBox: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             HStack(spacing: Theme.Spacing.xs) {
                 if runner.isBusy {
                     ProgressView().controlSize(.small)
@@ -233,34 +234,17 @@ struct ExtrasView: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
-            ScrollView {
-                Text(runner.outputLines.isEmpty ? " " : runner.outputLines.joined(separator: "\n"))
-                    .font(.system(.caption2, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(Theme.Spacing.s)
-            }
-            .frame(height: 160)
-            .background {
-                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                    .fill(Color.primary.opacity(0.05))
-            }
+            OutputBox(lines: runner.outputLines, height: 160)
         }
     }
 
     // MARK: - Notes
 
     private var cabextractNote: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.s) {
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-            Text("Several Winetricks verbs (the Visual C++ and .NET runtimes, corefonts) need cabextract to unpack their downloads. If it's missing you'll be told to run \"brew install cabextract\".")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(Theme.Spacing.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overpassCard(cornerRadius: Theme.Radius.row)
+        InlineNote(
+            systemImage: "info.circle",
+            text: "Several Winetricks verbs (the Visual C++ and .NET runtimes, corefonts) need cabextract to unpack their downloads. If it's missing you'll be told to run \"brew install cabextract\"."
+        )
     }
 }
 

@@ -9,6 +9,7 @@ import AppKit
 /// `BottleImportState.shared.status` while the copy/adopt/scan runs.
 struct ImportBottleSheet: View {
     @Environment(AppState.self) private var appState
+    @Environment(ThemeStore.self) private var themeStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var sources: [BottleImporter.Source] = []
@@ -17,6 +18,9 @@ struct ImportBottleSheet: View {
     @State private var engineID: String = ""
     @State private var windowsVersion: WindowsVersion = .win10
     @State private var chooseError: String?
+    /// True while `refresh()` is scanning, so an empty list is not
+    /// mistaken for "nothing found".
+    @State private var isScanning = false
 
     private let importState = BottleImportState.shared
 
@@ -35,16 +39,10 @@ struct ImportBottleSheet: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
             HStack {
                 Text("Import Bottle")
-                    .font(Theme.titleFont(18))
+                    .font(Theme.sheetTitleFont)
                 Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(importState.isImporting)
+                SheetCloseButton { dismiss() }
+                    .disabled(importState.isImporting)
             }
 
             if appState.installedEngines.isEmpty {
@@ -63,17 +61,13 @@ struct ImportBottleSheet: View {
             } else {
                 sourceList
                 if let chooseError {
-                    Text(chooseError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    ErrorText(chooseError)
                 }
                 if selectedSource != nil {
                     form
                 }
                 if let error = importState.lastError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                    ErrorText(error)
                 }
             }
 
@@ -90,8 +84,15 @@ struct ImportBottleSheet: View {
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 620)
-        .onAppear(perform: refresh)
+        .frame(width: Theme.Metrics.wideSheetWidth)
+        // Cancel and the close button are disabled during an import, but
+        // Escape would still dismiss the sheet over a running copy; this
+        // makes Escape agree with them.
+        .interactiveDismissDisabled(importState.isImporting)
+        // A failed import is also reported through `AppState`; show that
+        // alert here rather than behind the sheet.
+        .hostsErrorAlert()
+        .task { await refresh() }
         .onChange(of: selectedSourceID) { _, _ in prefillForSelection() }
     }
 
@@ -101,19 +102,21 @@ struct ImportBottleSheet: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
             SectionHeader(title: "Found Bottles", systemImage: "shippingbox")
 
-            if sources.isEmpty {
+            if sources.isEmpty && isScanning {
+                InlineProgress(text: "Looking for bottles…")
+            } else if sources.isEmpty {
                 Text("No CrossOver, Whisky, or Wine bottles were found in their usual locations.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                VStack(spacing: 6) {
+                VStack(spacing: Theme.Spacing.compact) {
                     ForEach(sources) { source in
                         sourceRow(source)
                     }
                 }
             }
 
-            Button("Choose Folder…") { chooseFolder() }
+            Button("Choose folder…") { chooseFolder() }
                 .buttonStyle(.quiet)
         }
     }
@@ -125,15 +128,18 @@ struct ImportBottleSheet: View {
         } label: {
             HStack(spacing: Theme.Spacing.s) {
                 Chip(text: source.kind.displayName, systemImage: kindIcon(source.kind), tint: .secondary)
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
                     Text(source.name)
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.primary)
+                    // Only the last three path components fit; the tooltip
+                    // carries the whole path.
                     Text(pathTail(source.prefixDir))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                        .help(source.prefixDir.path)
                 }
                 Spacer()
                 if let sizeBytes = source.sizeBytes {
@@ -146,14 +152,16 @@ struct ImportBottleSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.04))
+                    .fill(isSelected ? themeStore.current.badgeTint.opacity(Theme.Opacity.wash) : Color.primary.opacity(0.04))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 1.5)
+                    .strokeBorder(isSelected ? themeStore.current.badgeTint.opacity(0.6) : .clear, lineWidth: 1.5)
             }
         }
         .buttonStyle(.plain)
+        // Selection is drawn only as a tint and outline.
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func kindIcon(_ kind: BottleImporter.Kind) -> String {
@@ -181,7 +189,7 @@ struct ImportBottleSheet: View {
                         Text(engine.displayName).tag(engine.id)
                     }
                 }
-                Picker("Windows Version", selection: $windowsVersion) {
+                Picker("Windows version", selection: $windowsVersion) {
                     ForEach(WindowsVersion.allCases) { version in
                         Text(version.displayName).tag(version)
                     }
@@ -190,31 +198,48 @@ struct ImportBottleSheet: View {
             .formStyle(.grouped)
 
             if let kind = appState.installedEngines.first(where: { $0.id == engineID })?.kind {
-                Text(engineTradeoffCaption(for: kind))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                EngineTradeoffNote(kind: kind)
                     .padding(.horizontal, Theme.Spacing.s)
             }
         }
     }
 
     private var progressBlock: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.s) {
-            HStack(spacing: Theme.Spacing.s) {
-                ProgressView().controlSize(.small)
-                Text(importState.status)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, Theme.Spacing.s)
+        InlineProgress(text: importState.status)
+            .padding(.vertical, Theme.Spacing.s)
     }
 
     // MARK: - Actions
 
-    private func refresh() {
-        sources = BottleImporter.discover()
+    /// Scans for importable bottles without blocking the main actor.
+    ///
+    /// This used to call the synchronous `BottleImporter.discover()`,
+    /// which walks every prefix to size it: measured at 86 ms before the
+    /// concurrency pass and 39 ms after, on a machine with only two small
+    /// prefixes, and it grows with the number and size of CrossOver
+    /// prefixes. That stalled the main thread while the sheet was
+    /// animating in. `discoverAsync()` was added for exactly this and runs
+    /// the same work on a detached task with an identical result.
+    ///
+    /// Loading state: the sheet has no spinner, and `sourceList` shows
+    /// "No CrossOver, Whisky, or Wine bottles were found" whenever
+    /// `sources` is empty, so awaiting would flash that false message for
+    /// the duration of the scan. `isScanning` suppresses it and shows an
+    /// `InlineProgress` instead. It is cleared in all cases, and the
+    /// result is merged rather than assigned so a folder the user picked
+    /// with "Choose folder…" while the scan was running is not dropped.
+    /// The initial selection is only made if the user has not already
+    /// chosen something.
+    ///
+    /// Not verified here: the visual timing of the spinner (no UI session
+    /// available to the agent that made this change); the logic is
+    /// straight-line and the build is clean.
+    private func refresh() async {
+        isScanning = true
+        defer { isScanning = false }
+        let found = await BottleImporter.discoverAsync()
+        let chosen = sources
+        sources = chosen + found.filter { f in !chosen.contains { $0.id == f.id } }
         if selectedSourceID == nil {
             selectedSourceID = sources.first?.id
         }

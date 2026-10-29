@@ -23,7 +23,7 @@ struct SetupWizardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Text("Welcome to Overpass")
                     .font(Theme.titleFont())
                 Text("A few one-time steps to get Wine running.")
@@ -52,7 +52,11 @@ struct SetupWizardView: View {
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 460)
+        .frame(width: Theme.Metrics.sheetWidth)
+        // Installing the engine and creating the bottle both report their
+        // failures through `AppState.errorMessage`; the root alert would be
+        // hidden behind this sheet, so the wizard shows it itself.
+        .hostsErrorAlert()
     }
 
     /// Three short lines of plain-language orientation, shown once, before
@@ -60,10 +64,10 @@ struct SetupWizardView: View {
     /// newcomer through what's about to happen rather than assuming they
     /// already know what a "bottle" or an "engine" is.
     private var orientationCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.compact) {
             Text("A **bottle** is a private Windows environment — its own C: drive, installed programs, and engine.")
             Text("An **engine** is the Wine build a bottle runs on. Game Porting Toolkit (below) is the best default for games; Wine Staging trades some game performance for wider app compatibility — switch anytime from Engines.")
-            Text("Once you have both, use **Install App** for common software or **Run .exe…** for your own installers.")
+            Text("Once you have both, use **Install app** for common software or **Run .exe…** for your own installers.")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -101,7 +105,11 @@ struct SetupWizardView: View {
                 if let progress = appState.engineInstallProgress[defaultRelease.id] {
                     ProgressView(value: progress)
                 }
-                Button("Install \(defaultRelease.displayName)") {
+                // "Installing…" while it runs, matching the other engine
+                // controls (the Engines screen's "Importing…"), instead of a
+                // disabled button that still says "Install".
+                let isWorking = isInstallingEngine || appState.engineInstallProgress[defaultRelease.id] != nil
+                Button(isWorking ? "Installing…" : "Install \(defaultRelease.displayName)") {
                     isInstallingEngine = true
                     Task {
                         await appState.installEngine(defaultRelease)
@@ -109,7 +117,7 @@ struct SetupWizardView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(isInstallingEngine || appState.engineInstallProgress[defaultRelease.id] != nil)
+                .disabled(isWorking)
             }
         }
     }
@@ -124,6 +132,7 @@ struct SetupWizardView: View {
             if appState.bottles.isEmpty {
                 HStack {
                     TextField("Bottle name", text: $bottleName)
+                        .disabled(isCreatingBottle)
                     Button("Create") {
                         isCreatingBottle = true
                         Task {
@@ -135,12 +144,7 @@ struct SetupWizardView: View {
                     .disabled(isCreatingBottle || bottleName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 if isCreatingBottle {
-                    HStack(spacing: Theme.Spacing.s) {
-                        ProgressView().controlSize(.small)
-                        Text(appState.bottleCreationStatus.values.first ?? "Creating…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    InlineProgress(text: appState.bottleCreationStatus.values.first ?? "Creating…")
                 }
             } else {
                 Label("Bottle \"\(appState.bottles[0].name)\" is ready.", systemImage: "checkmark.circle.fill")

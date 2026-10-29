@@ -25,7 +25,18 @@ enum WineRunner {
     /// The environment a bottle's Wine processes launch with. See PLAN.md
     /// §6 "Bottle environment" — order matters only in that `bottle.env`
     /// is merged last so user overrides always win.
-    static func environment(for bottle: Bottle, engine: InstalledEngine) -> [String: String] {
+    ///
+    /// `shimDylib` is the frame-counter dylib to inject when the bottle's
+    /// `performance.frameCounter` diagnostic is on. It defaults to the
+    /// copy bundled in the .app (`FrameCounterShim.dylibURL()`), which is
+    /// nil on a `swift build` dev run — in which case nothing is injected
+    /// and no error is raised. Tests pass an explicit URL (or nil) to
+    /// exercise both paths without a bundle.
+    static func environment(
+        for bottle: Bottle,
+        engine: InstalledEngine,
+        shimDylib: URL? = FrameCounterShim.dylibURL()
+    ) -> [String: String] {
         var env: [String: String] = [:]
         env["WINEPREFIX"] = bottle.prefixDir.path
         env["PATH"] = "\(engine.binDir.path):/usr/bin:/bin"
@@ -36,7 +47,11 @@ enum WineRunner {
         // Needed by GPTK to load D3DMetal; harmless for plain Wine-staging.
         env["DYLD_FALLBACK_LIBRARY_PATH"] = "\(engine.libDir.path):\(engine.libDir.path)/external"
         if bottle.dxvk {
-            env["WINEDLLOVERRIDES"] = "d3d9,d3d10core,d3d11,dxgi=n,b"
+            // Must list every dll `DXVKInstaller.candidateDLLs` copies into
+            // system32, or Wine loads its own builtin for the ones missing
+            // here and that DXVK dll is simply ignored. `d3d8` joined the
+            // list when the pin moved to upstream DXVK 3.x, which ships it.
+            env["WINEDLLOVERRIDES"] = "d3d8,d3d9,d3d10core,d3d11,dxgi=n,b"
         }
 
         // D3DMetal overlay: only meaningful on Wine-staging — GPTK already
@@ -55,6 +70,11 @@ enum WineRunner {
         if let perf = bottle.performance {
             for (key, value) in PerformanceSettings.environment(for: perf, bottle: bottle, engine: engine) { env[key] = value }
         }
+        // Frame counter diagnostic (see `FrameCounterShim`): after the
+        // performance block so an `extraEnv` DYLD_INSERT_LIBRARIES is
+        // appended to rather than clobbered, and before `bottle.env` so
+        // an explicit bottle-level override of that variable still wins.
+        FrameCounterShim.apply(to: &env, enabled: bottle.performance?.frameCounter == true, dylib: shimDylib)
         for (key, value) in bottle.env { env[key] = value }
         return env
     }
@@ -258,7 +278,11 @@ enum WineRunner {
     /// needed — used for the "virtual desktop skipped, here's why" note
     /// `launch` writes before falling back to `start /unix`, since that
     /// fallback otherwise happens silently.
-    private static func appendLogLine(_ line: String, to logURL: URL) {
+    /// Internal rather than private so `AppState.run` can write
+    /// `GameFixService` progress into the same run log the launch itself
+    /// uses — a first-run winetricks install can take minutes, and
+    /// without this it is a completely silent freeze.
+    static func appendLogLine(_ line: String, to logURL: URL) {
         let dir = logURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if !FileManager.default.fileExists(atPath: logURL.path) {

@@ -28,10 +28,37 @@ enum Theme {
         .system(size: size, weight: weight, design: .rounded)
     }
 
+    /// The title at the top of every sheet (New Bottle, Import Bottle,
+    /// Open with Overpass, a program's arguments, a catalog app's detail).
+    /// These had drifted to 16, 18 and 20pt depending on which file was
+    /// written first; one token keeps a sheet's title the same size no
+    /// matter which sheet it is. The first-run wizard's "Welcome to
+    /// Overpass" deliberately stays at `titleFont()`'s 22pt default — it's
+    /// a landing screen, not a task sheet.
+    static let sheetTitleFont: Font = titleFont(18)
+
+    /// The name line of a list row — sidebar bottles, Programs rows,
+    /// Games rows and cards. Plain system font on purpose (see
+    /// `titleFont`'s note on dense lists), pinned to 13pt so the three
+    /// screens that spell the same row stay identical.
+    static let rowTitleFont: Font = .system(size: 13)
+
+    /// The muted second line under a `rowTitleFont` line (engine short
+    /// name, relative path, store and size).
+    static let rowSubtitleFont: Font = .system(size: 11)
+
     // MARK: - Metrics
 
     enum Spacing {
+        /// Hairline gap between a row's name and its muted second line.
+        static let hairline: CGFloat = 1
+        /// Gap between a control and the one-line caption directly under it.
+        static let xxs: CGFloat = 2
         static let xs: CGFloat = 4
+        /// Between `xs` and `s`: the gap inside small clusters of related
+        /// controls — a search glyph and its field, wrapped chips, rows in
+        /// a short stacked list.
+        static let compact: CGFloat = 6
         static let s: CGFloat = 8
         static let m: CGFloat = 12
         static let l: CGFloat = 16
@@ -52,6 +79,37 @@ enum Theme {
         /// Uniform row height for sidebar rows and program/game list rows.
         static let row: CGFloat = 36
         static let listRow: CGFloat = 44
+        /// Vertical padding of the full-size accent and quiet buttons
+        /// (`AuroraButtonStyle`, `QuietButtonStyle`) — kept as one value so
+        /// a quiet button sits at the same height as the accent button
+        /// beside it.
+        static let buttonPadding: CGFloat = 14
+        /// Minimum hit area for an icon-only button (remove, copy, close,
+        /// hover-revealed play). A bare SF Symbol is ~12-17pt square, which
+        /// is hard to click; this is the macOS floor for a pointer target.
+        /// `toolbarControl` (28) stays the size for the compact toolbar
+        /// strip, where the buttons must match the search field's height.
+        static let iconButton: CGFloat = 24
+        /// Maximum width of a scrolling settings-style column (Engines,
+        /// Settings, Config, Performance, Extras), so form rows and cards
+        /// don't stretch into unreadably long lines on a wide window.
+        static let contentMaxWidth: CGFloat = 760
+        /// Width of the standard task sheets (New Bottle, Open with
+        /// Overpass, a catalog app, the setup wizard).
+        static let sheetWidth: CGFloat = 460
+        /// Width of the one sheet with a source list beside a form
+        /// (Import Bottle).
+        static let wideSheetWidth: CGFloat = 620
+        /// Width of the small single-field sheet (a program's arguments).
+        static let compactSheetWidth: CGFloat = 380
+    }
+
+    enum Opacity {
+        /// The faint tint behind a selected row, a chip, or a status icon —
+        /// one value so "selected" and "tagged" washes match across
+        /// Programs, Settings, Import and `Chip`. (Settings' theme swatch
+        /// used 0.16 and the rest 0.14; no one chose the difference.)
+        static let wash: Double = 0.14
     }
 
     enum Radius {
@@ -315,12 +373,12 @@ struct SectionHeader: View {
                 .textCase(.uppercase)
                 .tracking(0.6)
         }
-        .padding(.bottom, 2)
+        .padding(.bottom, Theme.Spacing.xxs)
         .overlay(alignment: .bottomLeading) {
             themeStore.current.accentGradient
                 .frame(width: 28, height: 2)
                 .clipShape(Capsule())
-                .offset(y: 4)
+                .offset(y: Theme.Spacing.xs)
         }
     }
 }
@@ -332,40 +390,51 @@ struct SectionHeader: View {
 /// vocabulary that lets the accent stay rare.
 struct Chip: View {
     @Environment(ThemeStore.self) private var themeStore
+    @Environment(\.colorScheme) private var colorScheme
     let text: String
     var systemImage: String?
     var tint: Color = .secondary
     var prominent: Bool = false
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: Theme.Spacing.xs) {
             if let systemImage {
                 Image(systemName: systemImage)
+                    .foregroundStyle(prominent ? .white : tint)
             }
             Text(text)
                 .lineLimit(1)
+                .foregroundStyle(prominent ? .white : labelColor)
         }
         .font(.caption2.weight(.medium))
-        .foregroundStyle(prominent ? .white : tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.horizontal, Theme.Spacing.s)
+        .padding(.vertical, Theme.Spacing.xs)
         .background {
             if prominent {
                 Capsule().fill(themeStore.current.accentGradient)
             } else {
-                Capsule().fill(tint.opacity(0.14))
+                Capsule().fill(tint.opacity(Theme.Opacity.wash))
             }
         }
     }
+
+    /// The tinted text of a quiet chip is 10pt coloured type on a 14% wash
+    /// of the same colour: fine on a dark card, but in light mode the
+    /// yellow ("Default") and orange ("Custom", "Unverified checksum")
+    /// chips fall far below readable contrast. In light mode the label
+    /// therefore uses the primary text colour and the tint is carried by
+    /// the glyph and the wash; dark mode is unchanged. Every tinted chip
+    /// has a glyph, so the colour is never the only signal.
+    private var labelColor: Color {
+        colorScheme == .light && tint != .secondary ? .primary : tint
+    }
 }
 
-/// A gradient-filled chip specifically for "something needs your
-/// attention" states (update available, active profile) — the current
-/// theme's accent applied to a badge rather than a full button.
-// MARK: - Status pill card (Home's 2x2 grid)
+// MARK: - Status pill card
 
-/// One compact status check for the Home hero panel's 2x2 grid: an icon,
-/// a title, and a one-line subtitle, tinted green or red by `ok`.
+/// One compact status check (used by the first-run setup wizard's
+/// checklist): an icon, a title, and a one-line subtitle, tinted green or
+/// red by `ok`.
 struct StatusPillCard: View {
     let title: String
     let ok: Bool
@@ -378,26 +447,41 @@ struct StatusPillCard: View {
         HStack(alignment: .top, spacing: Theme.Spacing.s) {
             ZStack {
                 Circle()
-                    .fill(tint.opacity(0.16))
+                    .fill(tint.opacity(Theme.Opacity.wash))
                 Image(systemName: ok ? "checkmark" : "xmark")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(tint)
             }
             .frame(width: 22, height: 22)
+            // The green/red tint is the visual signal; the check/cross glyph
+            // is the shape-based one; this is the spoken one. The subtitle
+            // beside it already says why ("Installed", "Not installed…"),
+            // so this only needs to name the state.
+            .accessibilityElement(children: .ignore)
+            // "Not ready", the plain opposite of "Ready": the one place
+            // this card is used is a first-run checklist, where an unticked
+            // step is simply not done yet, not a fault ("Needs attention"
+            // implied something had gone wrong).
+            .accessibilityLabel(ok ? "Ready" : "Not ready")
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                HStack(spacing: Theme.Spacing.xs) {
                     Image(systemName: systemImage)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Text(title)
                         .font(.subheadline.weight(.semibold))
                 }
+                // No line limit: the subtitle can be a command the user has
+                // to copy out ("softwareupdate --install-rosetta ..."), and
+                // the old two-line middle-truncation cut the part that
+                // matters out of the middle of it. Selectable for the same
+                // reason.
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
 
             Spacer(minLength: 0)
@@ -420,7 +504,7 @@ struct StatusPillCard: View {
 struct AuroraButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(ThemeStore.self) private var themeStore
-    var verticalPadding: CGFloat = 14
+    var verticalPadding: CGFloat = Theme.Metrics.buttonPadding
     /// Full-width by default (sheets, wizards). Toolbar-sized buttons pass
     /// `false` so the label keeps its own width plus breathing room instead
     /// of being clipped against the gradient's edges.
@@ -448,7 +532,7 @@ struct AuroraButtonStyle: ButtonStyle {
 extension ButtonStyle where Self == AuroraButtonStyle {
     static var aurora: AuroraButtonStyle { AuroraButtonStyle() }
     /// Accent button sized to its label — for toolbars and headers.
-    static var accentCompact: AuroraButtonStyle { AuroraButtonStyle(verticalPadding: 8, fillsWidth: false) }
+    static var accentCompact: AuroraButtonStyle { AuroraButtonStyle(verticalPadding: Theme.Spacing.s, fillsWidth: false) }
 }
 
 /// Overpass-flavored alias for `AuroraButtonStyle` — prefer this name (and
@@ -465,13 +549,20 @@ extension ButtonStyle where Self == AccentButtonStyle {
 /// primary accent button without competing with it (Play Vanilla).
 struct QuietButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
+    var verticalPadding: CGFloat = Theme.Metrics.buttonPadding
+    /// Full-width by default (a block under a list or form). Header and
+    /// action rows pass `false` (see `.quietCompact`) so the button keeps
+    /// its label's width and sits at the height of the bordered buttons
+    /// beside it instead of stretching across the row at 46pt tall.
+    var fillsWidth: Bool = true
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.subheadline.weight(.medium))
             .foregroundStyle(isEnabled ? .primary : .secondary)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity)
+            .padding(.vertical, verticalPadding)
+            .padding(.horizontal, fillsWidth ? 0 : Theme.Spacing.m)
+            .frame(maxWidth: fillsWidth ? .infinity : nil)
             .background {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                     .fill(Color.primary.opacity(configuration.isPressed ? 0.10 : 0.05))
@@ -483,6 +574,9 @@ struct QuietButtonStyle: ButtonStyle {
 
 extension ButtonStyle where Self == QuietButtonStyle {
     static var quiet: QuietButtonStyle { QuietButtonStyle() }
+    /// Quiet button sized to its label — the counterpart of
+    /// `.accentCompact`, for rows of buttons (log tools, engine actions).
+    static var quietCompact: QuietButtonStyle { QuietButtonStyle(verticalPadding: Theme.Spacing.compact, fillsWidth: false) }
 }
 
 // MARK: - Flow layout
@@ -492,7 +586,7 @@ extension ButtonStyle where Self == QuietButtonStyle {
 /// shouldn't be clipped or force a fixed column count the way
 /// `LazyVGrid` would.
 struct FlowLayout: Layout {
-    var spacing: CGFloat = 6
+    var spacing: CGFloat = Theme.Spacing.compact
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? .infinity

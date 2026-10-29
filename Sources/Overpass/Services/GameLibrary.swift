@@ -287,13 +287,7 @@ enum GameLibrary {
     /// like Steam's `SizeOnDisk`). `nil` if the directory can't be walked
     /// at all.
     private static func directorySize(_ dir: URL) -> Int64? {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else { return nil }
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            total += Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        }
-        return total
+        TreeSize.totalFileSize(of: dir)
     }
 
     private static func readText(_ url: URL) -> String? {

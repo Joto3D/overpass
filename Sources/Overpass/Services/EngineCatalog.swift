@@ -6,7 +6,7 @@ import Foundation
 /// the SHA-256 below before extracting it.
 ///
 /// Hashes were computed by downloading each tarball with `curl -L` and
-/// running `shasum -a 256` on it (September 2026). If a release is ever
+/// running `shasum -a 256` on it (October 2026). If a release is ever
 /// replaced upstream, `EngineManager.install` will fail its checksum check
 /// rather than silently installing a different build — update the hash
 /// (and re-verify the on-disk layout) when that happens.
@@ -21,18 +21,64 @@ enum EngineCatalog {
             notes: "Wine plus Apple's D3DMetal, which translates DirectX 11/12 straight to Metal. Best performance and compatibility for games. D3DMetal is distributed under Apple's non-commercial licence."
         ),
         EngineRelease(
-            id: "wine-staging-11.16",
+            id: "wine-staging-11.20",
             kind: .wineStaging,
-            version: "11.16",
-            url: URL(string: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.16/wine-staging-11.16-osx64.tar.xz")!,
-            sha256: "cd68f230c773a761b8a0423a08c51fbe49e89b6e52246f3866898d259a4988c6",
-            notes: "The newest upstream Wine-staging build, fully open source. DirectX 9/10/11 titles can use DXVK (toggle per bottle) instead of Wine's built-in GL translation."
+            version: "11.20",
+            url: URL(string: "https://github.com/Gcenx/macOS_Wine_builds/releases/download/11.20/wine-staging-11.20-osx64.tar.xz")!,
+            sha256: "4df858c5e72920deaf123cbc29fa2b9e64c23bcf2dea59e0a7047b879b9cd952",
+            notes: "The newest upstream Wine-staging build, fully open source. DirectX 8/9/10/11 titles can use DXVK (toggle per bottle) instead of Wine's built-in GL translation."
         ),
     ]
 
     /// GPTK is the default: best game compatibility out of the box.
     static var defaultRelease: EngineRelease {
         releases.first { $0.id == "gptk-3.0-3" }!
+    }
+
+    // MARK: - Game Porting Toolkit 4 (user-supplied, deliberately not pinned)
+
+    // Apple's Game Porting Toolkit 4 has **no entry in `releases`**, and
+    // must not get one. Verified 2026-10-29: (1) Gcenx, the only source of
+    // the pinned GPTK 3 build, has not repackaged it — newest release is
+    // still 3.0-3 from 2026-03-03; (2) Apple's own download sits behind an
+    // Apple Account sign-in (the URL 302s to `idmsa.apple.com`); (3) Apple's
+    // licence limits any redistribution of the framework and `/redist` files
+    // to non-commercial purposes under its own terms, and Overpass is not a
+    // channel Apple has authorised, so it neither mirrors nor auto-fetches
+    // them; and (4) the download is not a Wine build at all,
+    // only D3DMetal libraries, so a pinned URL + SHA-256 would not yield an
+    // engine even if it existed. The user supplies the file; see
+    // `GPTKRedist` for the research record and
+    // `EngineManager.installUserSuppliedGPTK` for the install.
+    //
+    // Keeping it out of `releases` also keeps `EnginesView`'s "known
+    // engines" list, the update checker's `merged(with:)`, and the
+    // self-test's catalog-shape assertions describing only things Overpass
+    // can actually download.
+
+    /// `AppState.engineInstallProgress` / `engineInstallStatus` key used
+    /// while a user-supplied GPTK install runs. A fixed string rather than
+    /// the eventual engine id because the id depends on the D3DMetal version
+    /// and base engine, which are only known after validation has started.
+    static let userSuppliedGPTKProgressKey = "user-supplied-gptk"
+
+    /// The `InstalledEngine.id` (and folder name under `Paths.engines`) for
+    /// D3DMetal `d3dmetalVersion` layered on installed engine `baseID`, e.g.
+    /// `gptk-4.0b3-on-wine-staging-11.20`. Includes the base so installing the
+    /// same download onto two different Wine builds yields two engines
+    /// rather than one silently replacing the other, and so the id alone
+    /// says what the engine is made of. Characters outside `[A-Za-z0-9._-]`
+    /// are replaced with `-` because the id becomes a directory name.
+    static func userSuppliedGPTKID(d3dmetalVersion: String, baseID: String) -> String {
+        let raw = "gptk-\(d3dmetalVersion)-on-\(baseID)"
+        return String(raw.map { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) ? $0 : "-" })
+    }
+
+    /// True for engines Overpass built from a user-supplied download rather
+    /// than installed from `releases` — what a view should use to decide
+    /// whether to show an installed engine that has no catalog card.
+    static func isUserSupplied(_ engine: InstalledEngine) -> Bool {
+        engine.userSupplied != nil
     }
 
     // MARK: - Live catalog
@@ -77,7 +123,7 @@ enum EngineCatalog {
     /// back to a string compare of any non-numeric component. Returns a
     /// positive number when `a` is newer than `b`, negative when older,
     /// zero when equal (as far as this heuristic can tell).
-    private static func compareVersions(_ a: String, _ b: String) -> Int {
+    static func compareVersions(_ a: String, _ b: String) -> Int {
         let partsA = a.split(whereSeparator: { $0 == "." || $0 == "-" }).map(String.init)
         let partsB = b.split(whereSeparator: { $0 == "." || $0 == "-" }).map(String.init)
         for i in 0..<max(partsA.count, partsB.count) {

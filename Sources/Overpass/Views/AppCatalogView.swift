@@ -32,11 +32,7 @@ struct AppCatalogView: View {
                 categoryChips
 
                 if filteredApps.isEmpty {
-                    Text(query.isEmpty ? "No apps in this category." : "No apps match \u{201c}\(query)\u{201d}.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, Theme.Spacing.xl)
+                    EmptyStateMessage(query.isEmpty ? "No apps in this category." : "No apps match \u{201c}\(query)\u{201d}.")
                 } else {
                     LazyVGrid(columns: columns, spacing: Theme.Spacing.l) {
                         ForEach(filteredApps) { app in
@@ -50,7 +46,7 @@ struct AppCatalogView: View {
                     }
                 }
             }
-            .padding(Theme.Spacing.xl)
+            .padding(Theme.Spacing.outer)
         }
         .sheet(item: $selectedApp) { app in
             AppCatalogDetailSheet(app: app)
@@ -61,7 +57,7 @@ struct AppCatalogView: View {
         HStack(alignment: .top, spacing: Theme.Spacing.s) {
             Image(systemName: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Text("No engine installed yet")
                     .font(Theme.headingFont(13))
                 Text("Install a Wine engine before installing an app — Overpass needs one to run any installer.")
@@ -72,7 +68,9 @@ struct AppCatalogView: View {
             Button("Go to Engines") {
                 appState.selection = .engines
             }
-            .buttonStyle(.quiet)
+            // Compact: the full-width quiet style would stretch across this
+            // row and squeeze the notice text beside it.
+            .buttonStyle(.quietCompact)
         }
         .padding(Theme.Spacing.m)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,6 +81,7 @@ struct AppCatalogView: View {
         HStack(spacing: Theme.Spacing.s) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             TextField("Search apps (Steam, 7-Zip, VLC…)", text: $query)
                 .textFieldStyle(.plain)
             if !query.isEmpty {
@@ -90,9 +89,13 @@ struct AppCatalogView: View {
                     query = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .frame(width: Theme.Metrics.iconButton, height: Theme.Metrics.iconButton)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .help("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, Theme.Spacing.m)
@@ -121,6 +124,9 @@ struct AppCatalogView: View {
             )
         }
         .buttonStyle(.plain)
+        // The selected category is shown only by the chip's gradient fill;
+        // this is the non-visual equivalent.
+        .accessibilityAddTraits(selectedCategory == category ? .isSelected : [])
     }
 }
 
@@ -164,7 +170,7 @@ private struct AppCatalogCard: View {
                 }
                 .frame(width: 44, height: 44)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(app.name)
                         .font(Theme.headingFont(15))
                         .lineLimit(2)
@@ -176,12 +182,16 @@ private struct AppCatalogCard: View {
                 Spacer(minLength: 0)
             }
 
+            // Two lines is a deliberate cap (every card in the grid is the
+            // same fixed height); the full blurb is one hover away and is
+            // shown in full at the top of the detail sheet.
             Text(app.blurb)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .help(app.blurb)
 
             Spacer(minLength: 0)
 
@@ -221,6 +231,18 @@ private struct AppCatalogDetailSheet: View {
     private var isFailed: Bool { isActive && installState.phase == "Failed" }
     private var isInstalling: Bool { isActive && !isDone && !isFailed }
 
+    /// True while a *different* catalog app is mid-install. `AppInstallState`
+    /// is one shared instance: a second `begin()` would take over
+    /// `activeAppID`, and when the first install finished, its
+    /// `finish(error:)` would mark the second app as done or failed. So the
+    /// Install button stays disabled until the running install ends.
+    /// `activeAppID` is left set after an install finishes (the card keeps
+    /// showing its result), so "Done"/"Failed" count as no longer running.
+    private var anotherInstallRunning: Bool {
+        guard let activeID = installState.activeAppID, activeID != app.id else { return false }
+        return installState.phase != "Done" && installState.phase != "Failed"
+    }
+
     private var launchPin: PinnedProgram? {
         guard isDone, let targetBottleID, let bottle = appState.bottles.first(where: { $0.id == targetBottleID }) else { return nil }
         return bottle.pins.first { $0.name == app.name }
@@ -240,7 +262,11 @@ private struct AppCatalogDetailSheet: View {
             }
             .padding(Theme.Spacing.xl)
         }
-        .frame(width: 460, height: 560)
+        .frame(width: Theme.Metrics.sheetWidth, height: 560)
+        // Starting an install can fail through `AppState.report` (no engine,
+        // bottle creation failed, the installer errored) while this sheet is
+        // open; the root alert would sit behind it.
+        .hostsErrorAlert()
         .onAppear {
             if bottleChoice == nil {
                 bottleChoice = appState.bottles.first.map { .existing($0.id) } ?? .newBottle
@@ -252,15 +278,10 @@ private struct AppCatalogDetailSheet: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.s) {
             HStack {
                 Text(app.name)
-                    .font(Theme.titleFont(20))
+                    .font(Theme.sheetTitleFont)
+                    .lineLimit(2)
                 Spacer()
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
+                SheetCloseButton { dismiss() }
             }
             Text(app.publisher)
                 .font(.caption)
@@ -291,7 +312,7 @@ private struct AppCatalogDetailSheet: View {
     private var prerequisitesBlock: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             SectionHeader(title: "Prerequisites", systemImage: "list.bullet")
-            FlowLayout(spacing: 6) {
+            FlowLayout {
                 ForEach(app.winetricksVerbs, id: \.self) { verb in
                     Chip(text: verb, systemImage: "shippingbox")
                 }
@@ -315,15 +336,19 @@ private struct AppCatalogDetailSheet: View {
                 .buttonStyle(.quiet)
             } else if !isActive || isFailed {
                 bottlePicker
-                Button(isFailed ? "Retry Install" : "Install") {
+                Button(isFailed ? "Retry install" : "Install") {
                     Task { await performInstall() }
                 }
                 .buttonStyle(.aurora)
-                .disabled(bottleChoice == nil)
-                if let error = installState.lastError, isFailed {
-                    Text(error)
+                .disabled(bottleChoice == nil || anotherInstallRunning)
+                if anotherInstallRunning {
+                    Text("Another app is installing right now. Wait for it to finish, then come back to install \(app.name).")
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = installState.lastError, isFailed {
+                    ErrorText(error)
                 }
             } else {
                 progressBlock
@@ -362,7 +387,7 @@ private struct AppCatalogDetailSheet: View {
             }
 
             DisclosureGroup("Log", isExpanded: $isLogExpanded) {
-                outputBox
+                OutputBox(lines: Array(installState.output.suffix(15)), height: 120)
                     .padding(.top, Theme.Spacing.xs)
             }
             .font(.caption)
@@ -370,30 +395,8 @@ private struct AppCatalogDetailSheet: View {
         }
     }
 
-    private var outputBox: some View {
-        let lines = installState.output.suffix(15)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(line)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(height: 120)
-        .padding(Theme.Spacing.s)
-        .background {
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                .fill(Color.black.opacity(0.25))
-        }
-    }
-
     private func performInstall() async {
-        guard let bottleChoice else { return }
+        guard let bottleChoice, !anotherInstallRunning else { return }
 
         let resolvedBottle: Bottle?
         switch bottleChoice {
@@ -407,12 +410,16 @@ private struct AppCatalogDetailSheet: View {
                 appState.report("No installed engine to create a bottle with.")
                 return
             }
-            await appState.createBottle(name: app.name, engineID: engineID, windowsVersion: app.recommendedWindows)
-            if case .bottle(let newID)? = appState.selection {
-                resolvedBottle = appState.bottles.first { $0.id == newID }
-            } else {
-                resolvedBottle = appState.bottles.first { $0.name == app.name }
+            // Use the bottle `createBottle` hands back, never a lookup by
+            // name or by `selection`: those could match a leftover bottle
+            // from an earlier attempt and silently install into it. On nil
+            // creation failed and `createBottle` has already reported the
+            // real error; reporting again here would overwrite it with a
+            // vaguer message.
+            guard let created = await appState.createBottle(name: app.name, engineID: engineID, windowsVersion: app.recommendedWindows) else {
+                return
             }
+            resolvedBottle = created
         }
 
         guard let bottle = resolvedBottle, let engine = appState.engine(for: bottle) else {

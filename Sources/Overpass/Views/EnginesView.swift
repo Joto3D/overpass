@@ -54,8 +54,8 @@ struct EnginesView: View {
                 rosettaNote
                 gptk4Note
             }
-            .padding(Theme.Spacing.xl)
-            .frame(maxWidth: 760, alignment: .leading)
+            .padding(Theme.Spacing.outer)
+            .frame(maxWidth: Theme.Metrics.contentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
         .task {
@@ -73,10 +73,14 @@ struct EnginesView: View {
                     if isCheckingUpdates {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Check for Updates", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Check for updates", systemImage: "arrow.triangle.2.circlepath")
                     }
                 }
                 .disabled(isCheckingUpdates)
+                // While the spinner replaces the label, the button would
+                // otherwise have no name at all for VoiceOver or a tooltip.
+                .help(isCheckingUpdates ? "Checking for updates…" : "Check for updates")
+                .accessibilityLabel(isCheckingUpdates ? "Checking for updates" : "Check for updates")
             }
         }
     }
@@ -99,16 +103,11 @@ struct EnginesView: View {
     @ViewBuilder
     private var updateStatusNote: some View {
         if let updateCheckError {
-            HStack(alignment: .top, spacing: Theme.Spacing.s) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-                Text("Couldn't check for updates: \(updateCheckError)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(Theme.Spacing.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .overpassCard(cornerRadius: Theme.Radius.row)
+            InlineNote(
+                systemImage: "exclamationmark.triangle",
+                tint: .orange,
+                text: "Couldn't check for updates: \(updateCheckError)"
+            )
         } else if let lastCheckedAt {
             Text("Checked for updates \(lastCheckedAt.formatted(date: .abbreviated, time: .shortened)).")
                 .font(.caption)
@@ -116,18 +115,21 @@ struct EnginesView: View {
         }
     }
 
+    // Both notes below were `.lineLimit(1)`, which silently cut the end of
+    // the sentence off whenever the window was narrower than the text
+    // (the GPTK note is ~115 characters). They wrap instead.
     private var rosettaNote: some View {
         Text("Engines run under Rosetta 2, which Apple plans to remove most of in macOS 28 (2027).")
             .font(.caption)
             .foregroundStyle(.secondary)
-            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var gptk4Note: some View {
         Text("Newest redistributable GPTK is whatever Gcenx has published; Apple's GPTK 4 beta needs an Apple Developer download.")
             .font(.caption)
             .foregroundStyle(.secondary)
-            .lineLimit(1)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -139,6 +141,38 @@ private struct EngineRow: View {
 
     @State private var d3dmetalStatus: String?
     @State private var isImportingD3DMetal = false
+    /// True while "Restore previous D3DMetal" is running. Restore used to
+    /// have no in-flight state at all, so it could be clicked twice, or
+    /// while an import was swapping the same files.
+    @State private var isRestoringD3DMetal = false
+    /// True while "Remove" is deleting the engine's folder, so the button
+    /// can't be clicked again against a directory that is already going.
+    @State private var isRemoving = false
+    /// True while the "Remove" confirmation is on screen. Removal used to be
+    /// one click, and nothing stopped it while bottles still pointed at the
+    /// engine — those bottles then failed to launch with "No engine
+    /// installed".
+    @State private var showRemoveConfirmation = false
+
+    /// How many bottles are set to use this engine. Shown in the removal
+    /// confirmation so the cost of the click is visible before it happens.
+    private var bottlesUsingEngine: Int {
+        appState.bottles.filter { $0.engineID == release.id }.count
+    }
+
+    /// The confirmation's body text: what removal does, plus, when any
+    /// bottle depends on this engine, how many will stop launching and
+    /// how to fix that. Built here so the dialog closure stays readable.
+    private var removeConfirmationMessage: String {
+        let count = bottlesUsingEngine
+        let effect = "This removes the engine from this Mac (it is moved to the Trash when possible). You can install it again from this screen."
+        guard count > 0 else { return effect }
+        let noun = count == 1 ? "bottle uses" : "bottles use"
+        let pronoun = count == 1 ? "It" : "They"
+        return "\(count) \(noun) this engine. \(pronoun) won't be able to launch programs until you choose another engine in Config or reinstall this one.\n\n" + effect
+    }
+
+    private var isBusyWithD3DMetal: Bool { isImportingD3DMetal || isRestoringD3DMetal }
 
     private var installed: InstalledEngine? {
         appState.installedEngines.first { $0.id == release.id }
@@ -153,7 +187,7 @@ private struct EngineRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.m) {
             HStack(alignment: .top, spacing: Theme.Spacing.m) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     HStack(spacing: Theme.Spacing.s) {
                         Text(release.displayName)
                             .font(Theme.headingFont(16))
@@ -180,16 +214,17 @@ private struct EngineRow: View {
             }
 
             if installing {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     ProgressView(value: progress ?? 0)
                     Text(status ?? "Working…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             } else if let installed {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     Text(installed.versionString)
                         .font(.system(.caption, design: .monospaced).weight(.medium))
+                        .textSelection(.enabled)
                     Text("Installed \(installed.installedAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -214,6 +249,25 @@ private struct EngineRow: View {
         }
         .padding(Theme.Spacing.l)
         .overpassCard()
+        // Same shape as the bottle delete confirmation in MainWindow:
+        // titled question, destructive confirm, Cancel, explanatory message.
+        .confirmationDialog(
+            "Remove \"\(release.displayName)\"?",
+            isPresented: $showRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                guard let installed else { return }
+                isRemoving = true
+                Task {
+                    await appState.removeEngine(installed.id)
+                    isRemoving = false
+                }
+            }
+            Button("Cancel", role: .cancel) { showRemoveConfirmation = false }
+        } message: {
+            Text(removeConfirmationMessage)
+        }
     }
 
     @ViewBuilder
@@ -222,18 +276,22 @@ private struct EngineRow: View {
             EmptyView()
         } else if let installed {
             HStack(spacing: Theme.Spacing.s) {
+                // Compact quiet style: the full-width one stretched this
+                // button across the row at ~46pt tall beside the bordered
+                // Remove button.
                 Button("Reveal in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([installed.rootDir])
                 }
-                .buttonStyle(.quiet)
+                .buttonStyle(.quietCompact)
 
                 Button("Remove", role: .destructive) {
-                    Task { await appState.removeEngine(installed.id) }
+                    showRemoveConfirmation = true
                 }
                 .buttonStyle(.bordered)
+                .disabled(isRemoving || isBusyWithD3DMetal)
             }
         } else {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Button("Install") {
                     Task { await appState.installEngine(release) }
                 }
@@ -253,21 +311,22 @@ private struct EngineRow: View {
                     Button(isImportingD3DMetal ? "Importing…" : "Update D3DMetal from Apple GPTK .dmg…") {
                         importD3DMetal(installed)
                     }
-                    .buttonStyle(.quiet)
-                    .disabled(isImportingD3DMetal)
+                    .buttonStyle(.quietCompact)
+                    .disabled(isBusyWithD3DMetal || isRemoving)
 
                     if hasD3DMetalBackup {
-                        Button("Restore previous D3DMetal") {
+                        Button(isRestoringD3DMetal ? "Restoring…" : "Restore previous D3DMetal") {
                             restoreD3DMetal(installed)
                         }
-                        .buttonStyle(.quiet)
-                        .disabled(isImportingD3DMetal)
+                        .buttonStyle(.quietCompact)
+                        .disabled(isBusyWithD3DMetal || isRemoving)
                     }
                 }
                 if let d3dmetalStatus {
                     Text(d3dmetalStatus)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
         }
@@ -300,7 +359,10 @@ private struct EngineRow: View {
     }
 
     private func restoreD3DMetal(_ engine: InstalledEngine) {
+        guard !isBusyWithD3DMetal else { return }
+        isRestoringD3DMetal = true
         Task {
+            defer { isRestoringD3DMetal = false }
             do {
                 guard try await D3DMetalImporter.restoreBackup(engine: engine) else {
                     d3dmetalStatus = "No previous D3DMetal backup found."

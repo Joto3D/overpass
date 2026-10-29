@@ -93,6 +93,56 @@ enum D3DMetalOverlayError: LocalizedError {
 ///    doing so would only replace a working stock `d3d11.dll` with one
 ///    that fails to load at all, a strict regression for zero benefit.
 ///
+/// ## Re-verified October 2026 against newer everything — still fails
+///
+/// The September result above was obtained on Wine Staging **11.16** with
+/// the **GPTK 3.0** overlay, so it was fair to ask whether either moving
+/// on would change it. Both had: Overpass now ships Wine Staging 11.20,
+/// and GPTK **4.0b3** exists (it is what Bridgeplay pairs with WineCX,
+/// and its `libd3dshared.dylib` is 250,672 bytes against GPTK 3.0's
+/// 95,952 — it carries the DLSS-G frame-generation path, `ngx::
+/// FrameGenerator` onto `MDEFrameInterpolator`, which is the reason to
+/// want it).
+///
+/// Tested 2026-10-29 on `wine-11.20 (Staging)`, GPTK 4.0b3's seven-dll
+/// overlay staged with its `x86_64-unix` symlinks resolving and
+/// `CX_APPLEGPTK_LIBD3DSHARED_PATH`/`D3DMetal=1` set exactly as
+/// CrossOver's wrapper does. The discriminator this time was
+/// `nvngx-on-metalfx.dll`, which 11.20 does not ship at all:
+///
+///     warn:module:load_dll Failed to load module
+///     L"nvngx-on-metalfx.dll"; status=c0000135
+///
+/// and the resolver printed the path it actually searched —
+/// `C:\windows\system32;C:\windows\system;C:\windows;.;…` — with the
+/// `WINEDLLPATH` directory **absent from it entirely**. `d3d11.dll`
+/// meanwhile loaded the engine's own stock builtin as before.
+///
+/// So this is not a version-skew problem that a newer Wine or a newer
+/// GPTK fixes. Upstream Wine's builtin resolver does not consult
+/// `WINEDLLPATH` for these names, full stop; CrossOver's Wine carries its
+/// own support for loading this overlay, which is why WineCX works and
+/// Wine-staging does not *through `WINEDLLPATH`*.
+///
+/// **CORRECTED (29 October 2026).** The sentence that used to stand here
+/// — that frame generation via GPTK 4 requires a WineCX-class engine and
+/// not just the GPTK 4 files — was too strong. It holds for
+/// `WINEDLLPATH`, and every observation above it still stands. But
+/// copying the redist *into the engine's own `lib/`*, rather than
+/// pointing at it from outside, does get the files loaded on
+/// wine-staging 11.20: `d3d12`, `d3d12core`, `dxgi` and
+/// `nvngx-on-metalfx` map as builtin, and `vmmap` shows
+/// `libd3dshared.dylib` and `libdxccontainer.dylib` mapped from that
+/// clone's `lib/external`. `GPTKRedist` and `EngineManager` now build
+/// such a clone from a user-supplied GPTK 4 download.
+///
+/// That is *loading*, not *working*: `regsvr32 d3d11.dll` on the result
+/// hangs for an undiagnosed reason, and no D3D11 or D3D12 game has been
+/// rendered on it. Treat a derived engine as experimental. No public
+/// prebuilt WineCX exists either way — Gcenx's homebrew cask is gone,
+/// `CodeWeavers/wine` on GitHub 404s, and the build Bridgeplay ships is
+/// one it compiled itself (`org.winehq.wine.notproton.winecx`).
+///
 /// So: `install`/`uninstall` here still do real, useful work (staging
 /// the files, `isInstalled` reporting correctly), and `WineRunner`'s
 /// env wiring is not harmful — with nothing more than an unconsulted

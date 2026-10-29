@@ -50,20 +50,23 @@ struct PerformanceView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                .padding(Theme.Spacing.xl)
-                .frame(maxWidth: 760, alignment: .leading)
+                // No padding here: `BottleDetailView` already insets the tab
+                // area by `Theme.Spacing.outer`, and the extra 24pt that used
+                // to sit here pushed this tab's content further in than
+                // Programs, Games and Logs. The cards draw their border
+                // inside their own bounds, so nothing is clipped at the
+                // scroll view's edge (Programs' list sits flush the same way).
+                // The second frame pins the capped column to the left: a
+                // ScrollView centres content narrower than itself, so with
+                // only the first frame this tab sat in the middle of a wide
+                // window. Same pair as Config's form.
+                .frame(maxWidth: Theme.Metrics.contentMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .task(id: bottleID) { load(bottle) }
         } else {
-            emptyState
+            ContentUnavailableView("Bottle not found", systemImage: "questionmark.circle")
         }
-    }
-
-    private var emptyState: some View {
-        Text("Bottle not found.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     // MARK: - Load
@@ -83,18 +86,12 @@ struct PerformanceView: View {
         if isApplyingRegistry || registryError != nil {
             HStack(spacing: Theme.Spacing.s) {
                 if isApplyingRegistry {
-                    ProgressView().controlSize(.small)
-                    Text("Applying…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    InlineProgress(text: "Applying…")
                 }
+                // No line limit: the old two-line cap clipped the end of a
+                // long registry error, which is the part that says why.
                 if let registryError {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                    Text(registryError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
+                    ErrorText(registryError)
                 }
             }
         }
@@ -117,15 +114,19 @@ struct PerformanceView: View {
             Text(pendingPreset.summary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 if settings.preset == .custom {
                     Chip(text: "Custom", systemImage: "pencil", tint: .orange)
                 }
                 Spacer()
-                Button("Apply Preset") { applyPreset() }
+                Button("Apply preset") { applyPreset() }
                     .buttonStyle(.bordered)
+                    // `applyPreset` already refuses to run mid-apply; the
+                    // disabled state says so instead of silently doing
+                    // nothing.
+                    .disabled(isApplyingRegistry)
             }
         }
         .padding(Theme.Spacing.l)
@@ -133,12 +134,14 @@ struct PerformanceView: View {
     }
 
     private func applyPreset() {
-        guard let bottle else { return }
+        // One registry apply at a time: see `mutate`.
+        guard let bottle, !isApplyingRegistry else { return }
+        let previous = settings
         let updated = settings.applyingPreset(pendingPreset)
         settings = updated
         videoMemoryDraft = updated.videoMemorySize ?? ""
         frameRateDraft = updated.frameRateCap.map(String.init) ?? ""
-        persist(updated, in: bottle, applyRegistry: true)
+        persist(updated, previous: previous, in: bottle, applyRegistry: true)
     }
 
     // MARK: - Graphics (engine-specific + Metal HUD)
@@ -170,6 +173,17 @@ struct PerformanceView: View {
                 help: "MTL_HUD_ENABLED — Apple's built-in overlay: live FPS and frame time in the corner of the window.",
                 isOn: bottleBinding(\.metalHUD, in: bottle)
             )
+
+            // Engine-independent diagnostic, so it sits here beside the
+            // Metal HUD rather than in the GPTK-only block with D3DMetal
+            // logging: the shim hooks Metal itself, which both D3DMetal and
+            // MoltenVK (DXVK) end in. Counter only — no on-screen display.
+            toggleRow(
+                "Frame counter (diagnostic)",
+                caption: "Writes frame timings to the run log.",
+                help: "Injects a Metal present hook that counts frames and logs \"fgshim:\" lines (present count, frame time, fps) to this program's run log. Diagnostic only — it changes nothing on screen and adds a little overhead. Takes effect only in the packaged app, which contains the hook library.",
+                isOn: binding(\.frameCounter)
+            )
         }
         .padding(Theme.Spacing.l)
         .overpassCard()
@@ -180,7 +194,7 @@ struct PerformanceView: View {
         toggleRow(
             "MetalFX upscaling",
             caption: "Converts DLSS calls to Apple MetalFX upscaling.",
-            help: "D3DM_ENABLE_METALFX — converts a game's NVIDIA DLSS calls to Apple MetalFX upscaling. Only helps titles that support DLSS, and needs their MetalFX shim DLLs installed in system32 first.",
+            help: "D3DM_ENABLE_METALFX — converts a game's NVIDIA DLSS calls to Apple MetalFX upscaling. Only affects titles that support DLSS; no extra setup is needed, since the engine ships the shim itself.",
             isOn: binding(\.metalFX)
         )
         toggleRow(
@@ -199,13 +213,6 @@ struct PerformanceView: View {
 
     @ViewBuilder
     private var dxvkToggles: some View {
-        toggleRow(
-            "Async shader compilation",
-            caption: "Compiles shaders in the background to cut stutter.",
-            help: "DXVK_ASYNC — compiles shaders on a background thread instead of stalling the frame. Removes most traversal stutter in open-world games; can briefly show a not-yet-compiled shader's placeholder.",
-            isOn: binding(\.dxvkAsync)
-        )
-
         pickerRow(
             "HUD overlay",
             caption: "In-game FPS/frame time overlay for comparing presets.",
@@ -222,7 +229,7 @@ struct PerformanceView: View {
         fieldRow(
             "Frame rate cap",
             caption: "Caps rendering to reduce heat, fan noise, or stutter.",
-            help: "DXVK_FRAME_RATE — caps rendering to reduce heat/fan noise or smooth frame pacing. Leave blank to uncap."
+            help: "Caps rendering to reduce heat/fan noise or smooth frame pacing. Leave blank to uncap. Applied as dxgi.maxFrameRate / d3d9.maxFrameRate through DXVK_CONFIG."
         ) {
             TextField("Uncapped", text: $frameRateDraft)
                 .frame(width: 80)
@@ -269,7 +276,8 @@ struct PerformanceView: View {
                 "Disable CSMT",
                 caption: "Can fix rendering glitches in a few older titles.",
                 help: "HKCU\\Software\\Wine\\Direct3D\\csmt=0 — turns off Command Stream Multi-Threading. On (faster) by default; disabling it can fix rendering corruption or hangs in a handful of older, finicky titles.",
-                isOn: binding(\.disableCSMT, registryBacked: true)
+                isOn: binding(\.disableCSMT, registryBacked: true),
+                isDisabled: isApplyingRegistry
             )
 
             fieldRow(
@@ -285,6 +293,7 @@ struct PerformanceView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
+            .disabled(isApplyingRegistry)
 
             pickerRow(
                 "wined3d backend",
@@ -298,6 +307,7 @@ struct PerformanceView: View {
                     }
                 }
                 .labelsHidden()
+                .disabled(isApplyingRegistry)
             }
         }
         .padding(Theme.Spacing.l)
@@ -320,19 +330,22 @@ struct PerformanceView: View {
                 "Retina mode",
                 caption: "Sharper text, but heavier on 4K/5K/6K displays.",
                 help: "Mac Driver\\RetinaMode=Y — renders at full display pixel density instead of a scaled logical resolution. Sharper text and UI, but real GPU cost on 4K/5K/6K Retina displays, and some games' windows appear tiny until their in-game resolution is adjusted.",
-                isOn: binding(\.retinaMode, registryBacked: true)
+                isOn: binding(\.retinaMode, registryBacked: true),
+                isDisabled: isApplyingRegistry
             )
             toggleRow(
                 "Option key is Alt",
                 caption: "Matches PC shortcuts like Alt+Tab and Alt+F4.",
                 help: "Mac Driver\\Left/RightOptionIsAlt=Y — makes both Option keys act as Alt inside the bottle, matching PC shortcuts (Alt+Tab, Alt+F4, weapon-wheel binds).",
-                isOn: binding(\.optionAsAlt, registryBacked: true)
+                isOn: binding(\.optionAsAlt, registryBacked: true),
+                isDisabled: isApplyingRegistry
             )
             toggleRow(
                 "Precise trackpad scrolling",
                 caption: "Smoother scroll deltas from trackpads and Magic Mouse.",
                 help: "Mac Driver\\UsePreciseScrolling — smoother scroll deltas from trackpads/Magic Mouse. Turn off if a game shows exaggerated zoom or repaint glitches on scroll input.",
-                isOn: binding(\.preciseScrolling, registryBacked: true)
+                isOn: binding(\.preciseScrolling, registryBacked: true),
+                isDisabled: isApplyingRegistry
             )
         }
         .padding(Theme.Spacing.l)
@@ -344,12 +357,18 @@ struct PerformanceView: View {
     @ViewBuilder
     private func advancedDisclosure(_ bottle: Bottle, _ engine: InstalledEngine?) -> some View {
         DisclosureGroup(isExpanded: $isAdvancedExpanded) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.l) {
-                advancedEnvTable
-                Divider()
-                resultingEnvList(bottle, engine)
+            // Only built while open: `resultingEnvList` assembles the full
+            // launch environment (and looks up the frame-counter shim on
+            // disk), which is wasted work on every render of a tab where the
+            // disclosure is almost always collapsed.
+            if isAdvancedExpanded {
+                VStack(alignment: .leading, spacing: Theme.Spacing.l) {
+                    advancedEnvTable
+                    Divider()
+                    resultingEnvList(bottle, engine)
+                }
+                .padding(.top, Theme.Spacing.m)
             }
-            .padding(.top, Theme.Spacing.m)
         } label: {
             SectionHeader(title: "Advanced", systemImage: "terminal")
         }
@@ -368,19 +387,21 @@ struct PerformanceView: View {
                     Text(key)
                         .font(.system(.caption, design: .monospaced))
                         .lineLimit(1)
+                        .help(key)
+                        .textSelection(.enabled)
                     Text("=").foregroundStyle(.secondary)
+                    // Middle-truncated to keep the row to one line; the
+                    // tooltip and selection give the full value back.
                     Text(settings.extraEnv[key] ?? "")
                         .font(.system(.caption, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(settings.extraEnv[key] ?? "")
+                        .textSelection(.enabled)
                     Spacer()
-                    Button {
+                    RemoveRowButton(name: key) {
                         mutate { $0.extraEnv.removeValue(forKey: key) }
-                    } label: {
-                        Image(systemName: "trash")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -418,7 +439,7 @@ struct PerformanceView: View {
                 let perf = PerformanceSettings.environment(for: settings, bottle: bottle, engine: engine)
                 let merged = base.merging(perf) { _, new in new }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     ForEach(merged.keys.sorted(), id: \.self) { key in
                         Text("\(key)=\(merged[key] ?? "")")
                             .font(.system(.caption2, design: .monospaced))
@@ -438,10 +459,16 @@ struct PerformanceView: View {
 
     /// A toggle with a short (≤ 12 word) caption underneath and the full
     /// explanation moved into a hover tooltip via `.help`.
+    ///
+    /// `isDisabled` is for the registry-backed toggles: `mutate` ignores a
+    /// registry-backed change made while another is still being applied, so
+    /// the toggle used to flip, snap back, and give no reason. Disabling it
+    /// for the duration says why (the "Applying…" row is showing).
     @ViewBuilder
-    private func toggleRow(_ title: String, caption: String, help: String, isOn: Binding<Bool>) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func toggleRow(_ title: String, caption: String, help: String, isOn: Binding<Bool>, isDisabled: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
             Toggle(title, isOn: isOn)
+                .disabled(isDisabled)
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -453,7 +480,7 @@ struct PerformanceView: View {
     /// treatment as `toggleRow`.
     @ViewBuilder
     private func pickerRow<Content: View>(_ title: String, caption: String, help: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
             HStack {
                 Text(title)
                 Spacer()
@@ -470,7 +497,7 @@ struct PerformanceView: View {
     /// + Set button), same short-caption/tooltip treatment.
     @ViewBuilder
     private func fieldRow<Content: View>(_ title: String, caption: String, help: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
             HStack {
                 Text(title)
                 content()
@@ -510,30 +537,74 @@ struct PerformanceView: View {
     }
 
     private func mutate(registryBacked: Bool = false, _ transform: (inout PerformanceSettings) -> Void) {
-        guard let bottle else { return }
+        // A registry-backed change made while another is still being
+        // applied is ignored (the control snaps back to its current value
+        // and the "Applying…" row is showing). Two overlapping applies
+        // can't each know what to roll back to if one fails.
+        guard let bottle, !(registryBacked && isApplyingRegistry) else { return }
+        let previous = settings
         var updated = settings
         transform(&updated)
         if updated.preset != .custom { updated.preset = .custom }
         settings = updated
-        persist(updated, in: bottle, applyRegistry: registryBacked)
+        persist(updated, previous: previous, in: bottle, applyRegistry: registryBacked)
     }
 
-    private func persist(_ updated: PerformanceSettings, in bottle: Bottle, applyRegistry: Bool) {
+    /// Records `updated` on the bottle. For registry-backed changes the
+    /// bottle is saved only AFTER `PerformanceTuner.applyRegistry`
+    /// succeeds: the saved settings are what the Performance tab shows
+    /// next time, so saving first meant a failed registry write left the
+    /// bottle claiming settings the prefix never got. On failure (or no
+    /// engine to apply with) nothing is saved, and the on-screen
+    /// `settings` (and the two text drafts, which `applyPreset` also
+    /// rewrites) go back to `previous` so the controls show what is true.
+    /// Changes that touch no registry key are saved straight away.
+    private func persist(_ updated: PerformanceSettings, previous: PerformanceSettings, in bottle: Bottle, applyRegistry: Bool) {
         var savedBottle = bottle
         savedBottle.performance = updated
-        appState.updateBottle(savedBottle)
 
-        guard applyRegistry, let engine else { return }
+        guard applyRegistry else {
+            appState.updateBottle(savedBottle)
+            return
+        }
+
+        guard let engine else {
+            // Used to save and return silently: the settings were kept, and
+            // never applied to the prefix.
+            revert(to: previous, ifShowing: updated)
+            appState.report("Couldn't apply the performance settings: this bottle's engine isn't installed. Install it from the Engines screen, or pick a different engine for this bottle, then try again.")
+            return
+        }
+
         registryError = nil
         isApplyingRegistry = true
+        let bottleID = bottle.id
         Task {
             do {
                 try await PerformanceTuner.applyRegistry(settings: updated, bottle: savedBottle, engine: engine)
+                // Re-read the bottle now rather than saving the snapshot
+                // taken before the await, which would undo anything else
+                // changed on it in the meantime (ESync, Metal HUD, ...).
+                var live = appState.bottles.first(where: { $0.id == bottleID }) ?? savedBottle
+                live.performance = updated
+                appState.updateBottle(live)
             } catch {
+                revert(to: previous, ifShowing: updated)
                 registryError = error.localizedDescription
                 appState.report(error, context: "Applying performance settings")
             }
             isApplyingRegistry = false
         }
+    }
+
+    /// Puts the on-screen settings back to `previous`, but only if they
+    /// still show `attempted`: if the user has since switched to another
+    /// bottle (`load` replaced `settings`), rolling back would overwrite
+    /// that bottle's values with this one's.
+    private func revert(to previous: PerformanceSettings, ifShowing attempted: PerformanceSettings) {
+        guard settings == attempted else { return }
+        settings = previous
+        videoMemoryDraft = previous.videoMemorySize ?? ""
+        frameRateDraft = previous.frameRateCap.map(String.init) ?? ""
     }
 }

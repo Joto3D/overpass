@@ -11,7 +11,7 @@ enum DXVKInstallerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noAssetFound:
-            return "Couldn't find a DXVK-macOS release asset to download."
+            return "Couldn't find a DXVK release asset to download."
         case .httpStatus(let code):
             return "Downloading DXVK failed (server returned HTTP \(code))."
         case .extractionFailed(let detail):
@@ -22,40 +22,50 @@ enum DXVKInstallerError: LocalizedError {
     }
 }
 
-/// Installs/removes Gcenx's DXVK-macOS build (DirectX 10/11 over
-/// MoltenVK/Vulkan) into a bottle's `system32`. Only meaningful for
-/// Wine-staging bottles — GPTK already provides DirectX via D3DMetal
+/// Installs/removes upstream DXVK (DirectX 8/9/10/11 over MoltenVK/Vulkan)
+/// into a bottle's `system32`. Only meaningful for Wine-staging bottles —
+/// GPTK already provides DirectX via D3DMetal
 /// (`EngineKind.supportsDXVK == false`), so `ExtrasView` disables the
 /// toggle there.
+///
+/// Was pointed at Gcenx/DXVK-macOS until October 2026, whose newest
+/// release is still the May 2023 `v1.10.3-20230507-repack` — that fork is
+/// no longer maintained. Upstream `doitsujin/dxvk` ships the same thing
+/// we need (Windows PE DLLs under an `x64/` folder, which run inside the
+/// bottle and reach Metal through winevulkan → MoltenVK), so the pin now
+/// follows upstream instead of a three-year-old fork.
 enum DXVKInstaller {
-    /// The dll names DXVK-macOS has shipped across releases. Not every
-    /// release includes all four (the 2023 "repack" build, the newest as
-    /// of writing, only ships `d3d10core.dll`/`d3d11.dll`), so install and
-    /// backup both operate on whichever of these are actually present in
-    /// a given release's `x64` folder rather than assuming all four.
-    private static let candidateDLLs = ["d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
+    /// The dll names DXVK has shipped across releases. Not every release
+    /// includes all five (the old Gcenx repack only shipped
+    /// `d3d10core.dll`/`d3d11.dll`; `d3d8.dll` arrived upstream later), so
+    /// install and backup both operate on whichever of these are actually
+    /// present in a given release's `x64` folder rather than assuming all
+    /// five.
+    private static let candidateDLLs = ["d3d8.dll", "d3d9.dll", "d3d10core.dll", "d3d11.dll", "dxgi.dll"]
 
     private static let backupSuffix = ".overpass-bak"
 
     /// Hardcoded fallback in case the GitHub API call fails (rate limit,
     /// no network at the moment of checking, API shape change) — the
-    /// newest DXVK-macOS release as of September 2026. Verified reachable
-    /// with `curl -sIL <url>`.
+    /// newest upstream DXVK release as of October 2026. Downloaded and
+    /// checked: sha256
+    /// 40565b4a724aadc4433fa4e010b4b23916d9b1f1baeee64e17186db94f54e608,
+    /// DLLs under `dxvk-3.1.1/x64/`.
     private static let fallbackAssetURL = URL(
-        string: "https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507-repack/dxvk-macOS-async-v1.10.3-20230507-repack.tar.gz"
+        string: "https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz"
     )!
 
     // MARK: - Latest release lookup
 
-    /// Asks the GitHub API for the newest DXVK-macOS release and returns
-    /// the `.tar.gz` asset that lays its DLLs out under an `x64/` folder
-    /// (as opposed to the "-builtin" asset, which uses `x86_64-windows/`
-    /// and isn't what `install` looks for). Falls back to
-    /// `fallbackAssetURL` if the API call fails or its shape is
-    /// unexpected, rather than failing the whole install over a
-    /// transient API hiccup.
+    /// Asks the GitHub API for the newest upstream DXVK release and
+    /// returns the `.tar.gz` asset that lays its DLLs out under an `x64/`
+    /// folder (as opposed to the `dxvk-native-*` asset, which holds Linux
+    /// `.so` libraries for natively ported games and isn't what `install`
+    /// looks for). Falls back to `fallbackAssetURL` if the API call fails
+    /// or its shape is unexpected, rather than failing the whole install
+    /// over a transient API hiccup.
     static func latestReleaseURL() async throws -> URL {
-        let apiURL = URL(string: "https://api.github.com/repos/Gcenx/DXVK-macOS/releases/latest")!
+        let apiURL = URL(string: "https://api.github.com/repos/doitsujin/dxvk/releases/latest")!
         var request = URLRequest(url: apiURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Overpass", forHTTPHeaderField: "User-Agent")
@@ -80,9 +90,9 @@ enum DXVKInstaller {
             return (name, url)
         }
 
-        // Prefer the plain (non "-builtin") asset — it's the one with an
-        // "x64" top-level folder that `extractX64Folder` looks for.
-        if let plain = tarballAssets.first(where: { !$0.name.lowercased().contains("builtin") }) {
+        // Prefer the plain (non "native") asset — it's the one with an
+        // "x64" folder of Windows DLLs that `findX64Folder` looks for.
+        if let plain = tarballAssets.first(where: { !$0.name.lowercased().contains("native") }) {
             return plain.url
         }
         return tarballAssets.first?.url ?? fallbackAssetURL
@@ -90,7 +100,7 @@ enum DXVKInstaller {
 
     // MARK: - Install
 
-    /// Downloads the latest DXVK-macOS release, extracts it, and copies
+    /// Downloads the latest DXVK release, extracts it, and copies
     /// whichever of `candidateDLLs` it ships into `bottle`'s
     /// `system32`, backing up any file it's about to overwrite first
     /// (skipped if a backup already exists from a previous install, so
@@ -195,9 +205,9 @@ enum DXVKInstaller {
     // MARK: - Locating the extracted layout
 
     /// Walks the extracted tree for a directory literally named `x64`
-    /// (DXVK-macOS's 64-bit DLL folder — see the doc comment on
-    /// `latestReleaseURL` for why the "-builtin" asset, which uses
-    /// `x86_64-windows` instead, is avoided).
+    /// (DXVK's 64-bit DLL folder — see the doc comment on
+    /// `latestReleaseURL` for why the `dxvk-native-*` asset, which ships
+    /// Linux `.so` files instead, is avoided).
     private static func findX64Folder(in root: URL) -> URL? {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(

@@ -46,25 +46,42 @@ struct ProgramsGridView: View {
         return visiblePins.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
+    /// True when any of the three filter toggles is on. Those are
+    /// independent switches rather than one choice, so there is no single
+    /// "current" menu item to checkmark the way the Games store filter does;
+    /// instead the menu's icon itself changes (see `toolbar`).
+    private var hasActiveFilter: Bool {
+        showAllPrograms || showSystem || showHelpers
+    }
+
     var body: some View {
         if let bottle {
+            // Evaluated once per render: `filteredPins` filters the whole
+            // pin list, and the row loop below also asks for its last
+            // element for every row, which recomputed it n+1 times.
+            let pins = filteredPins
             VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                 toolbar(bottle)
 
                 if isMigrating {
-                    Text("Updating program list\u{2026}")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    InlineProgress(text: "Updating program list\u{2026}")
                 }
 
                 if bottle.pins.isEmpty {
-                    emptyState("Drop an .exe here, or use Run .exe\u{2026}, to pin your first program.")
-                } else if filteredPins.isEmpty {
-                    emptyState("No programs match \u{201c}\(searchText)\u{201d}.")
+                    EmptyStateMessage("Drop an .exe here, or use Run .exe\u{2026}, to pin your first program.")
+                } else if pins.isEmpty {
+                    // `defaultVisiblePins` promises not to come back empty
+                    // while `bottle.pins` isn't, but if it ever does, an empty
+                    // search box must not read "No programs match “”.".
+                    if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        EmptyStateMessage("No programs to show with the current filters.")
+                    } else {
+                        EmptyStateMessage("No programs match \u{201c}\(searchText)\u{201d}.")
+                    }
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(filteredPins) { pin in
+                            ForEach(pins) { pin in
                                 ProgramRow(
                                     pin: pin,
                                     bottle: bottle,
@@ -72,7 +89,7 @@ struct ProgramsGridView: View {
                                     onSelect: { selectedPinID = pin.id },
                                     onEditArgs: { beginEditingArgs(pin) }
                                 )
-                                if pin.id != filteredPins.last?.id {
+                                if pin.id != pins.last?.id {
                                     Divider()
                                 }
                             }
@@ -96,16 +113,7 @@ struct ProgramsGridView: View {
 
     private func toolbar(_ bottle: Bottle) -> some View {
         HStack(spacing: Theme.Spacing.s) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search programs", text: $searchText)
-                    .textFieldStyle(.plain)
-            }
-            .padding(.horizontal, Theme.Spacing.s)
-            .frame(maxWidth: .infinity)
-            .frame(height: Theme.Metrics.toolbarControl)
-            .overpassCard(cornerRadius: Theme.Radius.row)
+            ToolbarSearchField(prompt: "Search programs", text: $searchText)
 
             if isScanning {
                 ProgressView().controlSize(.small)
@@ -120,14 +128,23 @@ struct ProgramsGridView: View {
                 Toggle("Show helper executables", isOn: $showHelpers)
                     .help("Background/updater executables bundled with an app, not the app itself.")
             } label: {
-                Image(systemName: "line.3.horizontal.decrease.circle")
+                // The filled glyph (the standard "filter is on" symbol) and
+                // an accent tint make a non-default filter visible without
+                // opening the menu; the plain outline means defaults. Not
+                // color alone: the fill is a shape change too.
+                Image(systemName: hasActiveFilter
+                      ? "line.3.horizontal.decrease.circle.fill"
+                      : "line.3.horizontal.decrease.circle")
+                    .foregroundStyle(hasActiveFilter ? Color.accentColor : Color.secondary)
                     .frame(width: Theme.Metrics.toolbarControl, height: Theme.Metrics.toolbarControl)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Filter programs")
+            .help(hasActiveFilter ? "Filter programs (a filter is on)" : "Filter programs")
+            .accessibilityLabel("Filter programs")
+            .accessibilityValue(hasActiveFilter ? "Filter active" : "No filter")
 
-            IconToolbarButton(systemImage: "arrow.clockwise", help: "Rescan") {
+            IconToolbarButton(systemImage: "arrow.clockwise", help: "Rescan programs") {
                 Task { await rescan(bottle) }
             }
             .disabled(isScanning)
@@ -136,15 +153,6 @@ struct ProgramsGridView: View {
                 addProgram(bottle)
             }
         }
-    }
-
-    private func emptyState(_ message: String) -> some View {
-        Text(message)
-            .font(.system(size: 13))
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.top, Theme.Spacing.xl * 2)
     }
 
     // MARK: - Actions
@@ -231,8 +239,13 @@ struct ProgramsGridView: View {
 
     private func editArgsSheet(pin: PinnedProgram, bottle: Bottle) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
+            // Capped so a very long program name can't push the field and
+            // buttons out of a 380pt-wide sheet; the tooltip has it all.
             Text("Arguments for \(pin.name)")
-                .font(Theme.titleFont(16))
+                .font(Theme.sheetTitleFont)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .help("Arguments for \(pin.name)")
             TextField("Command-line arguments", text: $editingArgs)
                 .textFieldStyle(.roundedBorder)
             HStack {
@@ -246,11 +259,15 @@ struct ProgramsGridView: View {
                     appState.updateBottle(updated)
                     editingPin = nil
                 }
-                .buttonStyle(.borderedProminent)
+                // The sheets' one primary action (Create, Import, Run) uses
+                // the accent style; this was the lone `.borderedProminent`.
+                .buttonStyle(.accent)
+                .fixedSize()
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 380)
+        .frame(width: Theme.Metrics.compactSheetWidth)
+        .defersErrorAlert()
     }
 }
 
@@ -273,25 +290,27 @@ private struct ProgramRow: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.m) {
             Image(systemName: pin.isSystem ? "gearshape" : "app.fill")
-                .font(.system(size: 13))
+                .font(Theme.rowTitleFont)
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
+                HStack(spacing: Theme.Spacing.compact) {
                     Text(pin.name)
-                        .font(.system(size: 13))
+                        .font(Theme.rowTitleFont)
                         .lineLimit(1)
                     if pin.isSystem {
                         Chip(text: "System", tint: .secondary)
                     }
                 }
                 Text(subtitle)
-                    .font(.system(size: 11))
+                    .font(Theme.rowSubtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .help(subtitle.isEmpty ? pin.name : "\(pin.name) — \(subtitle)")
 
             Spacer(minLength: Theme.Spacing.m)
 
@@ -299,12 +318,13 @@ private struct ProgramRow: View {
                 Button(action: run) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 11))
-                        .frame(width: 20, height: 20)
+                        .frame(width: Theme.Metrics.iconButton, height: Theme.Metrics.iconButton)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
                 .fixedSize()
                 .help("Run")
+                .accessibilityLabel("Run \(pin.name)")
             }
         }
         .padding(.horizontal, Theme.Spacing.m)
@@ -312,16 +332,23 @@ private struct ProgramRow: View {
         .background {
             if isSelected {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                    .fill(themeStore.current.badgeTint.opacity(0.14))
+                    .fill(themeStore.current.badgeTint.opacity(Theme.Opacity.wash))
             }
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { run() }
         .onTapGesture(count: 1) { onSelect() }
         .onHover { isHovering = $0 }
+        // The selection tint is the only visible sign of which row is
+        // selected; the trait is the spoken one. The play button exists
+        // only while hovering, so "Run" is also exposed as an action on the
+        // row for keyboard and VoiceOver users.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAction(named: "Run") { run() }
         .contextMenu {
             Button("Run") { run() }
-            Button("Edit Arguments\u{2026}") { onEditArgs() }
+            Button("Edit arguments\u{2026}") { onEditArgs() }
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: pin.exePath)])
             }

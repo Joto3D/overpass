@@ -12,19 +12,29 @@ struct BottlePickerSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
             Text("Open with Overpass")
-                .font(Theme.titleFont(18))
+                .font(Theme.sheetTitleFont)
+            // Capped: dropping dozens of files at once would otherwise grow
+            // the sheet taller than the window. The tooltip has the lot.
             Text(fileListDescription)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .help(fileListDescription)
 
             List(appState.bottles, selection: $selectedBottleID) { bottle in
                 HStack {
+                    // One line each: a very long bottle name used to wrap and
+                    // squeeze the engine name into a sliver beside it.
                     Label(bottle.name, systemImage: "cylinder")
-                    Spacer()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(bottle.name)
+                    Spacer(minLength: Theme.Spacing.s)
                     if let engine = appState.engine(for: bottle) {
                         Text(engine.displayName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 .tag(bottle.id)
@@ -44,7 +54,8 @@ struct BottlePickerSheet: View {
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 460)
+        .frame(width: Theme.Metrics.sheetWidth)
+        .defersErrorAlert()
         .onAppear {
             selectedBottleID = appState.bottles
                 .sorted { ($0.lastUsed ?? .distantPast) > ($1.lastUsed ?? .distantPast) }

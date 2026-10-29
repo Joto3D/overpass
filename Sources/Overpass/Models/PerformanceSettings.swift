@@ -94,15 +94,55 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
     /// AppleGamingWiki "Game Porting Toolkit"
     /// (https://www.applegamingwiki.com/wiki/Game_Porting_Toolkit) and
     /// https://mybyways.com/blog/updating-crossover-to-gameporting-toolkit-3-0.
-    /// Only helps titles that query DLSS; requires the game's MetalFX
-    /// shim DLLs to be present in system32 (a separate one-time setup step,
-    /// out of scope here — this only sets the env var).
+    /// Only helps titles that actually query DLSS — but, contrary to what
+    /// this comment claimed until October 2026, it needs **no** separate
+    /// setup step on a GPTK bottle. GPTK ships the shim itself at
+    /// `wine/lib/wine/x86_64-windows/{nvngx,nvngx-on-metalfx}.dll`, each
+    /// paired with an `x86_64-unix/*.so` symlink to
+    /// `external/libd3dshared.dylib`, and that directory is exactly where
+    /// this Wine build's builtin-dll resolver looks. Verified on this
+    /// machine with a `WINEDEBUG=+loaddll` probe against the GPTK bottle:
+    /// `Loaded L"C:\windows\system32\nvngx.dll" ...: builtin` — resolved
+    /// straight from the engine, nothing copied into system32. (The
+    /// DXVK-style system32 copy that `D3DMetalOverlay` documents is a
+    /// Wine-staging problem; `metalFX` only emits on `.gptk` anyway.)
+    ///
+    /// Still unverified: that DLSS→MetalFX actually engages in a running
+    /// game. The probe proves the shim loads, not that a DLSS title drives
+    /// it. D3DMetal also reads `D3DM_NVNGX_PATH` to point at a specific
+    /// nvngx build; Overpass leaves it unset, so the default resolution
+    /// above applies.
     var metalFX: Bool = false
 
     /// `D3DM_ENABLE_LOGGING=1`. Verbose D3DMetal messages to the run log
     /// and Console.app, prefixed "D3DM". Source: AppleGamingWiki "Game
     /// Porting Toolkit". Diagnostic only — adds overhead, off by default.
     var d3dmLogging: Bool = false
+
+    /// Frame counter diagnostic: injects `libfgshim.dylib` (built from
+    /// `Shim/fgshim.m` by `scripts/bundle.sh`) into the bottle's Wine
+    /// processes via `DYLD_INSERT_LIBRARIES`, so every Metal present the
+    /// game makes is counted and logged as `fgshim:` lines in the per-run
+    /// log (`~/Library/Application Support/Overpass/Logs/`, the same file
+    /// Wine's stderr already streams into via `ProcessRunner`).
+    ///
+    /// **Counter only.** It observes presents and calls straight through;
+    /// there is no frame generation, interpolation, MetalFX or present
+    /// thread behind this switch. It exists to prove the hook catches
+    /// frames from a real Windows game under Wine before anything is built
+    /// on top of it. Deliberately engine-independent (unlike the D3DM_* /
+    /// DXVK_* fields): D3DMetal and MoltenVK both end in Metal, and the
+    /// shim hooks all seven present selectors they use between them — see
+    /// `Shim/fgshim.m` for why each is needed, and in particular that
+    /// MoltenVK's present fires on a different thread from `nextDrawable`.
+    ///
+    /// Off by default and off in every preset: a diagnostic, not a feature,
+    /// and injecting a dylib into every Wine child process is not something
+    /// to do unasked. A no-op (no env var at all) when the dylib is missing
+    /// — i.e. a `swift build` dev run, where it exists only inside the
+    /// .app; see `FrameCounterShim.dylibURL`. Decodes via `decodeIfPresent`
+    /// so `metadata.json` written before this field existed still loads.
+    var frameCounter: Bool = false
 
     /// `D3DM_SUPPORT_DXR=1`. Reports DirectX Raytracing support through
     /// D3DMetal's DX12 layer. Defaults off on M1/M2, on for M3+ per Apple;
@@ -112,19 +152,15 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
 
     // MARK: - DXVK (env vars, Wine-staging + `bottle.dxvk` only)
 
-    /// `DXVK_ASYNC=1`. Compiles shaders on a background thread instead of
-    /// stalling the frame — removes most traversal stutter, at the cost of
-    /// occasionally showing a not-yet-compiled shader's placeholder for a
-    /// frame or two. Source: DXVK README / community docs,
-    /// https://github.com/doitsujin/dxvk/blob/master/README.md.
-    var dxvkAsync: Bool = true
-
     /// `DXVK_HUD`. See `DXVKHudLevel`.
     var dxvkHud: DXVKHudLevel = .none
 
-    /// `DXVK_FRAME_RATE=<n>`. Caps rendering to reduce heat/fan noise or
-    /// smooth frame pacing; `nil`/`0` leaves it uncapped. Source: DXVK
-    /// README, https://github.com/doitsujin/dxvk/blob/master/README.md.
+    /// The frame rate limiter, delivered as `dxgi.maxFrameRate` /
+    /// `d3d9.maxFrameRate` through `DXVK_CONFIG` (see `environment`).
+    /// Caps rendering to reduce heat/fan noise or smooth frame pacing;
+    /// `nil`/`0` leaves it uncapped. Was `DXVK_FRAME_RATE` while Overpass
+    /// shipped the old Gcenx 1.10.3 build — that variable does not exist
+    /// in upstream DXVK 3.x.
     var frameRateCap: Int? = nil
 
     // MARK: - Wine core (env var)
@@ -194,6 +230,40 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
 
     init() {}
 
+    // MARK: - Codable
+
+    // Custom, rather than synthesized, so a field added after this type
+    // shipped (`frameCounter`) can default when absent instead of failing
+    // the decode — a synthesized `init(from:)` throws `keyNotFound` for any
+    // non-Optional property missing from an older `metadata.json`, which
+    // would take the bottle's whole `performance` block down with it. Every
+    // field uses `decodeIfPresent` with its declared default, so the next
+    // addition is safe too. `encode(to:)` stays synthesized.
+    private enum CodingKeys: String, CodingKey {
+        case preset, metalFX, d3dmLogging, frameCounter, raytracing, dxvkHud, frameRateCap
+        case largeAddressAware, disableCSMT, videoMemorySize, renderer
+        case retinaMode, optionAsAlt, preciseScrolling, extraEnv
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        preset = try c.decodeIfPresent(Preset.self, forKey: .preset) ?? .balanced
+        metalFX = try c.decodeIfPresent(Bool.self, forKey: .metalFX) ?? false
+        d3dmLogging = try c.decodeIfPresent(Bool.self, forKey: .d3dmLogging) ?? false
+        frameCounter = try c.decodeIfPresent(Bool.self, forKey: .frameCounter) ?? false
+        raytracing = try c.decodeIfPresent(Bool.self, forKey: .raytracing) ?? false
+        dxvkHud = try c.decodeIfPresent(DXVKHudLevel.self, forKey: .dxvkHud) ?? .none
+        frameRateCap = try c.decodeIfPresent(Int.self, forKey: .frameRateCap)
+        largeAddressAware = try c.decodeIfPresent(Bool.self, forKey: .largeAddressAware) ?? false
+        disableCSMT = try c.decodeIfPresent(Bool.self, forKey: .disableCSMT) ?? false
+        videoMemorySize = try c.decodeIfPresent(String.self, forKey: .videoMemorySize)
+        renderer = try c.decodeIfPresent(WineD3DRenderer.self, forKey: .renderer)
+        retinaMode = try c.decodeIfPresent(Bool.self, forKey: .retinaMode) ?? false
+        optionAsAlt = try c.decodeIfPresent(Bool.self, forKey: .optionAsAlt) ?? true
+        preciseScrolling = try c.decodeIfPresent(Bool.self, forKey: .preciseScrolling) ?? true
+        extraEnv = try c.decodeIfPresent([String: String].self, forKey: .extraEnv) ?? [:]
+    }
+
     // MARK: - Presets
 
     /// Canonical field values for each non-custom preset. `.custom` isn't
@@ -208,7 +278,6 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
         maxPerformance.preset = .maxPerformance
         maxPerformance.metalFX = true
         maxPerformance.raytracing = true
-        maxPerformance.dxvkAsync = true
         maxPerformance.dxvkHud = .fps
         maxPerformance.largeAddressAware = true
 
@@ -216,7 +285,6 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
         compatibility.preset = .compatibility
         compatibility.metalFX = false
         compatibility.raytracing = false
-        compatibility.dxvkAsync = false
         compatibility.disableCSMT = true
         compatibility.renderer = .gl
 
@@ -259,9 +327,16 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
             // installed in system32 (`bottle.dxvk`); setting them
             // otherwise is inert but needlessly noisy in the env preview.
             if bottle.dxvk {
-                if settings.dxvkAsync { env["DXVK_ASYNC"] = "1" }
                 if let hud = settings.dxvkHud.envValue { env["DXVK_HUD"] = hud }
-                if let cap = settings.frameRateCap, cap > 0 { env["DXVK_FRAME_RATE"] = String(cap) }
+                if let cap = settings.frameRateCap, cap > 0 {
+                    // Upstream DXVK has no `DXVK_FRAME_RATE`; the limiter
+                    // is a config option now, so it goes through
+                    // `DXVK_CONFIG` (inline dxvk.conf syntax, `;`
+                    // separated). Both keys are set so the cap applies
+                    // whichever API the game renders with — `dxgi` covers
+                    // D3D10/11, `d3d9` covers D3D8/9.
+                    env["DXVK_CONFIG"] = "dxgi.maxFrameRate = \(cap); d3d9.maxFrameRate = \(cap)"
+                }
             }
         }
 
@@ -277,10 +352,16 @@ struct PerformanceSettings: Codable, Hashable, Sendable {
 // - `MTL_SHADER_VALIDATION`: a Metal *debugging* flag (Xcode-injected
 //   shader validation, off by default outside Xcode) — setting it to 0 at
 //   runtime changes nothing; not a real performance knob.
-// - DXVK GPL-async (`DXVK_ASYNC` "graphics pipeline library" variant):
-//   couldn't confirm the Gcenx DXVK-macOS build ships the GPL-based async
-//   implementation rather than the plain shader-compile-thread one, so
-//   there's no separate flag to expose beyond `dxvkAsync`/`DXVK_ASYNC`.
+// - `DXVK_ASYNC` (async shader compilation), dropped October 2026 when
+//   the DXVK pin moved from Gcenx/DXVK-macOS 1.10.3 to upstream 3.1.1:
+//   async was never an upstream feature, it came from the third-party
+//   patch that fork carried ("dxvk-macOS-async"). Verified absent from
+//   upstream 3.1.1 by running `strings` over its `x64/d3d11.dll` — no
+//   `DXVK_ASYNC` string exists, and the only "async" matches are
+//   `ID3D11Asynchronous` C++ symbol names. DXVK 2.0+ instead builds
+//   pipelines ahead of time via `dxvk.enableGraphicsPipelineLibrary`,
+//   which it auto-detects per driver; forcing that on where DXVK chose
+//   not to can regress, so the toggle was removed rather than rewired.
 // - `AllowVerticalSync` (wined3d): no primary source found documenting
 //   this key or its accepted values for current Wine.
 // - `DisableMacVirtualDesktop`: doesn't exist — Wine's "emulate a virtual

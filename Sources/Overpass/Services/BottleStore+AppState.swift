@@ -20,10 +20,20 @@ extension AppState {
     /// then `winecfg -v <version>` (progress surfaced via
     /// `bottleCreationStatus`), writes `metadata.json`, and selects it. On
     /// any failure the partial folder is removed and the error reported.
-    func createBottle(name: String, engineID: String, windowsVersion: WindowsVersion) async {
+    ///
+    /// Returns the bottle it created, or `nil` when creation failed (in
+    /// which case the real error has already gone through `report`, so a
+    /// caller that just wants to stop should simply return without
+    /// reporting again). Callers that need the new bottle must use this
+    /// return value rather than hunting for it afterwards by name or via
+    /// `selection`: a same-named bottle left behind by an earlier attempt
+    /// would be found instead, and the caller would silently carry on
+    /// using a different, possibly half-configured prefix.
+    @discardableResult
+    func createBottle(name: String, engineID: String, windowsVersion: WindowsVersion) async -> Bottle? {
         guard let engine = installedEngines.first(where: { $0.id == engineID }) else {
             report("No installed engine to create the bottle with.")
-            return
+            return nil
         }
 
         let bottle = Bottle(name: name, engineID: engineID, windowsVersion: windowsVersion)
@@ -43,10 +53,12 @@ extension AppState {
             bottles.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             bottleCreationStatus[bottle.id] = nil
             selection = .bottle(bottle.id)
+            return bottle
         } catch {
             bottleCreationStatus[bottle.id] = nil
             try? FileManager.default.removeItem(at: bottle.prefixDir)
             report(error, context: "Creating bottle \"\(name)\"")
+            return nil
         }
     }
 
@@ -100,20 +112,124 @@ extension AppState {
             return
         }
 
+        // A pin can outlive its file (the program was uninstalled, or the
+        // folder moved), and Wine's `start /unix` on a missing path just
+        // exits non-zero with nothing on screen, so the click looked dead.
+        // Say so up front instead.
+        guard FileManager.default.fileExists(atPath: exe.path) else {
+            report("\(exe.lastPathComponent) isn't there any more (\(exe.path)). It may have been uninstalled or moved. Rescan programs for this bottle to refresh the list.")
+            return
+        }
+
+        // One fix preparation per bottle at a time. `prepare` can run
+        // winetricks for minutes, and clicking Launch again used to start
+        // a second winetricks on the same prefix, concurrently. Re-entry is
+        // ignored rather than queued or alerted: the first launch is
+        // already doing the work and will start its program when done, and
+        // a double-click should not raise an alert about itself. Cleared
+        // right after `prepare` returns (not at the end of `run`) so that
+        // once the bottle is ready, other launches into it are unaffected.
+        guard !preparingBottleIDs.contains(bottle.id) else { return }
+        preparingBottleIDs.insert(bottle.id)
+
         let logURL = LogStore.newLogURL(bottleID: bottle.id, exeName: exe.lastPathComponent)
+
+        // Per-game fixes (`GameFixCatalog`). Normally a no-op that returns
+        // `bottle` untouched. When a fix matches, its slow bottle changes
+        // (winetricks etc.) run here, once per bottle, before the program
+        // starts. `progress` carries every winetricks output line, far
+        // too chatty for `report` (a single-slot alert), so it only goes
+        // to the log; failures come back in `prepared.failures` and are
+        // reported once, together with the advisories, below. A failed fix
+        // never blocks the launch — see `GameFixService`.
+        let prepared = await GameFixService.prepare(exe: exe, bottle: bottle, engine: engine) { line in
+            // Every line lands in this run's own log, so a first-run
+            // winetricks install is inspectable rather than a silent
+            // multi-minute freeze before the program appears.
+            WineRunner.appendLogLine(line, to: logURL)
+        }
+        preparingBottleIDs.remove(bottle.id)
+        // `prepared.bottle` is the persistable one: it may carry new
+        // `appliedFixes`, which must survive into the `updateBottle`
+        // below rather than being overwritten by the caller's older copy.
+        let fixedBottle = prepared.bottle
+
+        // Launch-local copy with the fixes' env merged over the bottle's
+        // own (fix wins). Passed to `WineRunner.launch` only — never to
+        // `updateBottle` — so per-launch fix env is not persisted into
+        // metadata.json and disappears when the fix does.
+        var launchBottle = fixedBottle
+        for (key, value) in prepared.env { launchBottle.env[key] = value }
+
+        // Fix launch args follow the caller's own.
+        var launchArgs = args
+        if let extra = prepared.args {
+            launchArgs = launchArgs.isEmpty ? extra : launchArgs + " " + extra
+        }
+
+        // Advisories: compatibility facts no bottle setting can change.
+        // All of them go to the run log; the ones that change whether it
+        // is worth launching at all also raise the alert, so the user
+        // learns *before* staring at a window that never appears. `.info`
+        // (usually "a native Mac build exists") stays in the log — it is
+        // worth recording, not worth interrupting for.
+        //
+        // Everything that should interrupt (fix failures, those advisories,
+        // and a one-time note about unreadable user fix files) is gathered
+        // into `notices` and reported ONCE after the loop. The alert is a
+        // single slot, so separate `report` calls per item left the user
+        // seeing only the last one.
+        var notices = prepared.failures
+        for resolved in prepared.advisories {
+            // `AlternativeApp.message` adds one sentence when the advisory
+            // names an app that can run the program, and returns the
+            // message unchanged when it does not.
+            let line = "\(resolved.fixName): \(AlternativeApp.message(for: resolved.advisory))"
+            WineRunner.appendLogLine(line, to: logURL)
+            switch resolved.advisory.severity {
+            case .wontRun, .degraded: notices.append(line)
+            case .info: break
+            }
+        }
+        if let brokenFixFiles = GameFixCatalog.takeUserFixFailureNotice() {
+            WineRunner.appendLogLine(brokenFixFiles, to: logURL)
+            notices.append(brokenFixFiles)
+        }
+        if !notices.isEmpty { report(notices.joined(separator: "\n")) }
+
         do {
-            let process = try WineRunner.launch(exe: exe, args: args, bottle: bottle, engine: engine, logURL: logURL)
+            let launchedAt = Date()
+            let process = try WineRunner.launch(exe: exe, args: launchArgs, bottle: launchBottle, engine: engine, logURL: logURL)
 
             let record = RunRecord(bottleID: bottle.id, exePath: exe.path, logURL: logURL, pid: process.processIdentifier)
             runs.append(record)
 
-            var updated = ensuringPin(for: exe, in: bottle)
+            var updated = ensuringPin(for: exe, in: fixedBottle)
             updated.lastUsed = Date()
             updateBottle(updated)
 
             let recordID = record.id
             Task.detached { [weak self] in
                 process.waitUntilExit()
+
+                // Normally this launcher process exits within a second or
+                // two even though the program lives on (see below), so its
+                // exit status is not "how the program ended" and a non-zero
+                // value alone means nothing. But a launcher that fails
+                // *and* disappears almost immediately means Wine couldn't
+                // start the program at all (bad path, missing runtime,
+                // crash on load), which used to look exactly like a click
+                // that did nothing. 10 seconds separates that from a
+                // program that ran and was then closed or crashed on its
+                // own, which isn't ours to second-guess here.
+                let status = process.terminationStatus
+                if status != 0, Date().timeIntervalSince(launchedAt) < 10, let appState = self {
+                    let name = exe.lastPathComponent
+                    await MainActor.run {
+                        appState.report("\(name) closed right after starting (exit status \(status)). Open the Logs tab and read the newest log for \(name) to see why.")
+                    }
+                }
+
                 // The process we're watching is `wine ... start /unix
                 // <exe>` — Wine's launcher hands the real Windows process
                 // off to wineserver and exits almost immediately, well

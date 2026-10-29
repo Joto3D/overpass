@@ -36,8 +36,10 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .help(Paths.root.path)
+                            .textSelection(.enabled)
                         Spacer()
-                        Button("Open Data Folder") {
+                        Button("Open data folder") {
                             NSWorkspace.shared.open(Paths.root)
                         }
                         .buttonStyle(.bordered)
@@ -53,17 +55,27 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     HStack {
                         if let diagnosticsStatus {
-                            Text(diagnosticsStatus)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            // Spinner only while the report is being built
+                            // (the status also carries the final "Copied"
+                            // / "Saved" / "Couldn't save: ..." results,
+                            // which are selectable so a failure can be
+                            // pasted out).
+                            if isGeneratingReport {
+                                InlineProgress(text: diagnosticsStatus)
+                            } else {
+                                Text(diagnosticsStatus)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
                         }
                         Spacer()
-                        Button("Save Report…") {
+                        Button("Save report…") {
                             saveReport()
                         }
                         .buttonStyle(.bordered)
                         .disabled(isGeneratingReport)
-                        Button("Copy Report to Clipboard") {
+                        Button("Copy report to clipboard") {
                             copyReport()
                         }
                         .buttonStyle(.bordered)
@@ -77,12 +89,13 @@ struct SettingsView: View {
                     SectionHeader(title: "About", systemImage: "info.circle")
                     Text("Overpass \(appVersion)")
                         .font(.subheadline.weight(.medium))
+                        .textSelection(.enabled)
                     Text("Wine engines (Game Porting Toolkit, Wine Staging) run as x86_64 binaries under Rosetta 2. Apple is expected to remove most of Rosetta 2 in macOS 28 — engine selection stays behind an abstraction so a native build can be added later.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     HStack {
                         Spacer()
-                        Button("Run Setup Wizard Again") {
+                        Button("Run setup wizard again") {
                             appState.showSetupWizard = true
                         }
                         .buttonStyle(.bordered)
@@ -92,8 +105,11 @@ struct SettingsView: View {
                 .padding(Theme.Spacing.l)
                 .overpassCard()
             }
-            .padding(Theme.Spacing.xl)
-            .frame(maxWidth: 760, alignment: .leading)
+            .padding(Theme.Spacing.outer)
+            .frame(maxWidth: Theme.Metrics.contentMaxWidth, alignment: .leading)
+            // Same as Engines: the capped column is stated to sit centred in
+            // a wide window instead of depending on the ScrollView's default.
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -121,10 +137,15 @@ struct SettingsView: View {
             .padding(Theme.Spacing.s)
             .background {
                 RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                    .fill(isSelected ? palette.badgeTint.opacity(0.16) : Color.clear)
+                    .fill(isSelected ? palette.badgeTint.opacity(Theme.Opacity.wash) : Color.clear)
             }
         }
         .buttonStyle(.plain)
+        // The checkmark is the visible "selected" marker; this is the
+        // spoken one, so VoiceOver reads "Dusk, selected" instead of
+        // leaving the current theme undiscoverable.
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help(palette.summary)
     }
 
     private var appVersion: String {

@@ -24,6 +24,11 @@ struct BottleDetailView: View {
     /// `.task` would never refire and the tab would keep reflecting
     /// whichever bottle was selected first.
     @State private var hasGames = false
+    /// True while the tools menu's "Rescan programs" is running. The
+    /// Programs tab's own Rescan button disables itself while scanning, but
+    /// this menu item had no such guard, so a second click started an
+    /// overlapping scan whose merge could overwrite the first's result.
+    @State private var isRescanning = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case programs = "Programs"
@@ -59,7 +64,10 @@ struct BottleDetailView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 320, alignment: .leading)
+                // Sized to its labels rather than capped at 320pt: with six
+                // tabs (Games appears once a scan finds one) "Performance"
+                // and "Programs" were truncated in a 320pt control.
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.top, Theme.Spacing.l)
                 .padding(.bottom, Theme.Spacing.outer)
 
@@ -91,7 +99,7 @@ struct BottleDetailView: View {
             }
             .background {
                 if isDropTargeted {
-                    RoundedRectangle(cornerRadius: 0)
+                    Rectangle()
                         .fill(themeStore.current.badgeTint.opacity(0.08))
                 }
             }
@@ -122,15 +130,20 @@ struct BottleDetailView: View {
     @ViewBuilder
     private func header(_ bottle: Bottle) -> some View {
         HStack(alignment: .center, spacing: Theme.Spacing.m) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Text(bottle.name)
                     .font(Theme.titleFont(22, weight: .semibold))
                     .lineLimit(2)
                     .minimumScaleFactor(0.9)
+                // One line, so a long engine name could clip silently: the
+                // full text is in the tooltip, and it is selectable so the
+                // engine/Windows version can be copied into a bug report.
                 Text(subtitle(bottle))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .help(subtitle(bottle))
+                    .textSelection(.enabled)
             }
             Spacer()
             HStack(spacing: Theme.Spacing.s) {
@@ -176,16 +189,22 @@ struct BottleDetailView: View {
                 .help("Reveal this bottle's C: drive as a normal Finder folder.")
             Divider()
             Button("Rescan programs") { Task { await rescanPrograms(bottle) } }
+                .disabled(isRescanning)
                 .help("Scan this bottle's Desktop, Start Menu, and Program Files again for newly installed programs.")
         } label: {
             Image(systemName: "ellipsis.circle")
+                .frame(width: Theme.Metrics.iconButton, height: Theme.Metrics.iconButton)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("More tools")
+        .accessibilityLabel("More tools")
     }
 
     private func rescanPrograms(_ bottle: Bottle) async {
+        guard !isRescanning else { return }
+        isRescanning = true
+        defer { isRescanning = false }
         let scanned = await ProgramScanner.scan(bottle: bottle)
         let excluding = Set(bottle.removedPinPaths ?? [])
         let merged = ProgramScanner.merge(scanned: scanned, existing: bottle.pins, excluding: excluding)

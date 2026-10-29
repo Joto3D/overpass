@@ -17,10 +17,14 @@ enum Paths {
     /// Helper downloads: winetricks script, DXVK zips, engine tarballs.
     static let tools = root.appendingPathComponent("Tools", isDirectory: true)
     static let downloads = tools.appendingPathComponent("downloads", isDirectory: true)
+    /// User-supplied `GameFix` JSON files (one fix or an array per file),
+    /// merged over the built-in fixes by `GameFixCatalog`. Never written
+    /// by Overpass itself — it only reads whatever the user drops here.
+    static let fixes = root.appendingPathComponent("Fixes", isDirectory: true)
 
     /// Creates every directory above if missing. Safe to call repeatedly.
     static func ensureAll() throws {
-        for dir in [root, engines, bottles, logs, tools, downloads] {
+        for dir in [root, engines, bottles, logs, tools, downloads, fixes] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

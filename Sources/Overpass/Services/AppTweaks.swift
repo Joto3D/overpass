@@ -6,6 +6,13 @@ import Foundation
 /// Not every catalog app needs one; `CatalogApp.tweak` is `nil` unless a
 /// specific, documented workaround exists for that app.
 ///
+/// `GameFix` generalises this type: it is an `AppTweak` plus the matching
+/// criteria (which executables it applies to) and identity, so fixes can
+/// be applied at launch time and extended from JSON. The Steam recipe
+/// discussed below now lives in `GameFixCatalog.steam`, the single source
+/// of truth; the research notes stay here because they explain *why* that
+/// recipe looks the way it does.
+///
 /// ## Where the Steam recipe below comes from
 ///
 /// CrossOver 26.3 (`/Applications/CrossOver.app`) ships a profile for
@@ -63,7 +70,9 @@ import Foundation
 /// left `nil` here (not `.win7`) since switching Windows version was
 /// verified to make things *worse*, not better.
 struct AppTweak: Hashable, Sendable {
-    struct RegistryEntry: Hashable, Sendable {
+    /// `Codable` so `GameFix` — which carries these verbatim — can be
+    /// expressed as JSON on disk rather than only as Swift.
+    struct RegistryEntry: Codable, Hashable, Sendable {
         let key: String
         let name: String
         let type: String
@@ -214,15 +223,16 @@ struct AppTweak: Hashable, Sendable {
 /// `AppCatalog.apps` itself (rather than as a stored property there)
 /// only for the Steam entry so far — see `AppTweaks.steam`'s doc comment
 /// — but `CatalogApp.tweak` is the actual attachment point new entries
-/// should use directly.
+/// should use directly. The per-game fix database that applies at launch
+/// time is `GameFixCatalog`; this enum only bridges the catalog's
+/// install-time attachment point to it.
 enum AppTweaks {
-    /// The CrossOver-derived Steam recipe — see `AppTweak`'s doc comment
-    /// for the full CrossOver source and the by-hand verification
-    /// (**did not fix the crash**) this is based on.
-    static let steam = AppTweak(
-        registry: [
-            .init(key: "HKCU\\Software\\Valve\\Steam", name: "DWriteEnable", type: "REG_DWORD", data: "0"),
-        ],
-        winetricks: ["corefonts", "msxml3"]
-    )
+    /// The CrossOver-derived Steam recipe. `GameFixCatalog.steam` is the
+    /// single source of truth — this reads from it rather than repeating
+    /// the registry/winetricks lists, so the catalog's install-time tweak
+    /// (`CatalogApp.tweak`) and the launch-time fix (`GameFixService`) can
+    /// never drift apart (`DebugSelfTest` guards that they stay equal).
+    /// See `AppTweak`'s doc comment for the full CrossOver source and the
+    /// by-hand verification (**did not fix the crash**) this is based on.
+    static let steam = GameFixCatalog.steam.tweak
 }

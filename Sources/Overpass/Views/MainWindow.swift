@@ -54,6 +54,7 @@ struct MainWindow: View {
                     } label: {
                         Label("Add", systemImage: "plus")
                     }
+                    .help("Create or import a bottle")
                 }
             }
         } detail: {
@@ -81,14 +82,10 @@ struct MainWindow: View {
         // split view never collapses below it regardless of what the scene
         // declares.
         .frame(minWidth: 960, minHeight: 640)
-        .alert("Overpass", isPresented: Binding(
-            get: { appState.errorMessage != nil },
-            set: { if !$0 { appState.errorMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) { appState.errorMessage = nil }
-        } message: {
-            Text(appState.errorMessage ?? "")
-        }
+        // Not a plain `.alert`: this one stands down while a sheet is open
+        // (every sheet below opts in) so an error is never queued invisibly
+        // behind the setup wizard. See `SheetPresence` in Components.swift.
+        .rootErrorAlert()
         .confirmationDialog(
             "Delete \"\(bottlePendingDelete?.name ?? "")\"?",
             isPresented: Binding(

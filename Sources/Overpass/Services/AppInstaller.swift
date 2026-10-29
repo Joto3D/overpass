@@ -122,6 +122,11 @@ enum AppInstaller {
 
         do {
             var bottle = bottle
+            // Exit status and log of the installer process, kept for the
+            // "nothing was installed" check after the rescan below. `nil`
+            // when this app has no installer download (winetricks-only).
+            var installerStatus: Int32?
+            var installerLogURL: URL?
             try await applyRecommendedWindowsIfNeeded(app, bottle: &bottle, engine: engine, persist: persist, state: state)
 
             for verb in app.winetricksVerbs {
@@ -138,7 +143,8 @@ enum AppInstaller {
 
                 state.set(phase: "Running installer…", progress: nil)
                 let logURL = LogStore.newLogURL(bottleID: bottle.id, exeName: app.installerFileName.isEmpty ? "\(app.id)-install" : app.installerFileName)
-                try await runInstaller(app, localURL: localURL, bottle: bottle, engine: engine, logURL: logURL, state: state)
+                installerStatus = try await runInstaller(app, localURL: localURL, bottle: bottle, engine: engine, logURL: logURL, state: state)
+                installerLogURL = logURL
 
                 state.set(phase: "Waiting for installer to finish…", progress: nil)
                 await waitForInstallerToSettle(bottle: bottle)
@@ -161,8 +167,27 @@ enum AppInstaller {
             }
 
             state.set(phase: "Scanning installed programs…", progress: nil)
-            bottle = await rescanAndPin(app, bottle: bottle)
+            let pinned: Bool
+            (bottle, pinned) = await rescanAndPin(app, bottle: bottle)
             persist(bottle)
+
+            // A finished installer process is not a finished install: a
+            // wrong-architecture or corrupt installer, a silent flag it
+            // doesn't understand, or one the user cancelled all exit
+            // having put nothing on disk, and the catalog's own hint
+            // (`launchExeHints`) is the one thing that says what a good
+            // install must have produced. Before this check the card went
+            // green "Done" and offered a Launch button for a program that
+            // was never there. Only apps that *have* hints can be judged
+            // this way (runtimes like the VC++ redistributable install
+            // DLLs, not an exe to pin), and only when an installer
+            // actually ran. The rescan result is still persisted above, so
+            // anything else the installer did drop into the bottle shows
+            // up in Programs.
+            if !app.launchExeHints.isEmpty, !pinned, let installerStatus {
+                let logName = installerLogURL.map { LogFileName.displayName(for: $0) } ?? "the installer log"
+                throw InstallError(message: "\(app.name) doesn't appear to have installed: the installer finished (exit status \(installerStatus)) but its program wasn't found in the bottle. Open the Logs tab and read \"\(logName)\" to see what the installer said, then try Retry Install.")
+            }
 
             state.finish(error: nil)
             return bottle
@@ -197,7 +222,12 @@ enum AppInstaller {
     /// Downloads `url` to `Paths.downloads/<fileName>` with progress
     /// reported through `state.progress`. If a file already exists there
     /// and is over 1 MB (large enough to rule out a truncated/failed
-    /// previous attempt), it's reused as-is without re-downloading.
+    /// previous attempt) *and* starts with a Windows installer's magic
+    /// bytes (`looksLikeWindowsInstaller`), it's reused as-is without
+    /// re-downloading. Size alone isn't enough: a large HTML error page or
+    /// a half-written file from an older build that lacked the HTTP status
+    /// check below would otherwise be handed to Wine on every retry,
+    /// forever.
     @MainActor
     private static func downloadInstaller(from url: URL, fileName: String, state: AppInstallState) async throws -> URL {
         try Paths.ensureAll()
@@ -205,8 +235,11 @@ enum AppInstaller {
 
         if let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
            let size = attributes[.size] as? Int, size > 1_000_000 {
-            state.log("Reusing already-downloaded \(destination.lastPathComponent).")
-            return destination
+            if looksLikeWindowsInstaller(at: destination) {
+                state.log("Reusing already-downloaded \(destination.lastPathComponent).")
+                return destination
+            }
+            state.log("Ignoring cached \(destination.lastPathComponent): it isn't a Windows installer. Downloading it again.")
         }
 
         let progressHandler: @Sendable (Double) -> Void = { fraction in
@@ -218,8 +251,48 @@ enum AppInstaller {
             try? FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.moveItem(at: tempURL, to: destination)
+
+        // Same check the cache shortcut above applies, for the same reason
+        // but a different cause. The HTTP status check in
+        // `DownloadProgressFetcher` catches a 404 or 403; it cannot catch a
+        // 200 whose body isn't the installer — a captive portal's sign-in
+        // page, an interstitial "your download will begin shortly" page, or
+        // a vendor that quietly serves HTML once a pinned version is
+        // retired. Without this the HTML lands as `Setup.exe` and gets
+        // handed to Wine, which is exactly the path that used to end in a
+        // green "Done" with nothing installed.
+        guard looksLikeWindowsInstaller(at: destination) else {
+            try? FileManager.default.removeItem(at: destination)
+            throw InstallError(
+                message: "The download from \(url.host ?? "the server") wasn't a Windows installer — "
+                    + "the server returned a web page instead of \(destination.lastPathComponent). "
+                    + "The download link may have moved, or a network sign-in page may be in the way."
+            )
+        }
+
         state.log("Downloaded \(destination.lastPathComponent).")
         return destination
+    }
+
+    /// True when the file at `url` begins with the signature of something
+    /// Wine can run as an installer: `MZ` (a PE executable, i.e. every
+    /// `.exe` in the catalog) or `D0 CF 11 E0` (an OLE compound document,
+    /// which is what an `.msi` is). Reads only the first four bytes. A file
+    /// that can't be opened or is shorter than the signature is "no".
+    static func looksLikeWindowsInstaller(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 4) else { return false }
+        return hasWindowsInstallerSignature(head)
+    }
+
+    /// The byte test behind `looksLikeWindowsInstaller`, split out so it
+    /// can be checked without touching the disk.
+    static func hasWindowsInstallerSignature(_ head: Data) -> Bool {
+        let bytes = [UInt8](head)
+        if bytes.count >= 2, bytes[0] == 0x4D, bytes[1] == 0x5A { return true }
+        if bytes.count >= 4, bytes[0] == 0xD0, bytes[1] == 0xCF, bytes[2] == 0x11, bytes[3] == 0xE0 { return true }
+        return false
     }
 
     // MARK: - Running the installer
@@ -231,7 +304,7 @@ enum AppInstaller {
         engine: InstalledEngine,
         logURL: URL,
         state: AppInstallState
-    ) async throws {
+    ) async throws -> Int32 {
         let arguments: [String]
         if app.isMSI {
             arguments = ["msiexec", "/i", localURL.path] + app.silentArgs
@@ -242,24 +315,42 @@ enum AppInstaller {
         let commandLine = (["$", engine.wineBinary.path] + arguments).joined(separator: " ")
         await MainActor.run { state.log(commandLine) }
 
-        // Tail the log file into `state.output` while the installer runs,
+        // Stream the log file into `state.output` while the installer runs,
         // since `WineRunner.runTool` only hands back full stdout/stderr
         // once the process exits.
+        //
+        // Only text appended since the previous poll is emitted, tracked
+        // by a `LogStore.Cursor`. This used to re-read the last 4,000 bytes
+        // and append all of them every second the length changed, so each
+        // line was shown again on every poll until it scrolled out of the
+        // window — the install log repeated itself. (`logURL` is created
+        // fresh for this install by `LogStore.newLogURL`, so starting the
+        // cursor at the top of the file does not replay an older run.)
+        //
+        // When the task is cancelled (the installer exited, or the install
+        // threw) it does one last read with `flushPartial`, because a
+        // final line without a trailing newline would otherwise be held
+        // back forever. `tailTask.value` is awaited below so that flush
+        // lands before the "Installer exited" line rather than after it.
         let tailTask = Task.detached { @Sendable in
-            var lastLength = 0
+            var cursor = LogStore.Cursor()
             while !Task.isCancelled {
-                let text = LogStore.tail(logURL, maxBytes: 4_000)
-                if text.count != lastLength {
-                    lastLength = text.count
-                    let tail = text
-                    await MainActor.run { AppInstallState.shared.log(tail) }
+                let fresh = cursor.advance(logURL)
+                if !fresh.isEmpty {
+                    await MainActor.run { AppInstallState.shared.log(fresh) }
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            let rest = cursor.advance(logURL, flushPartial: true)
+            if !rest.isEmpty {
+                await MainActor.run { AppInstallState.shared.log(rest) }
             }
         }
         defer { tailTask.cancel() }
 
         let result = try await WineRunner.runTool(engine.wineBinary, arguments, bottle: bottle, engine: engine, logURL: logURL)
+        tailTask.cancel()
+        await tailTask.value
         if !app.silentArgs.isEmpty, result.status != 0 {
             // A non-zero exit from a *silent* install is worth surfacing;
             // an interactive installer's exit code is meaningless (it
@@ -269,6 +360,7 @@ enum AppInstaller {
                 state.log("Installer exited with status \(result.status).")
             }
         }
+        return result.status
     }
 
     /// Polls `pgrep -fl <prefix>` every 2s (up to 2 minutes) until only
@@ -311,9 +403,14 @@ enum AppInstaller {
 
     // MARK: - Post-install: rescan + pin
 
+    /// Rescans `bottle` and pins `app`'s launcher. `pinned` is true when one
+    /// of the app's `launchExeHints` resolved to a real file (and so the
+    /// app's pin now exists); false when none did — `run` treats that as
+    /// "the installer didn't actually install anything".
     @MainActor
-    private static func rescanAndPin(_ app: CatalogApp, bottle: Bottle) async -> Bottle {
+    private static func rescanAndPin(_ app: CatalogApp, bottle: Bottle) async -> (bottle: Bottle, pinned: Bool) {
         var bottle = bottle
+        var pinned = false
         let scanned = await ProgramScanner.scan(bottle: bottle)
         bottle.pins = ProgramScanner.merge(scanned: scanned, existing: bottle.pins)
 
@@ -340,10 +437,11 @@ enum AppInstaller {
             } else {
                 bottle.pins.append(PinnedProgram(name: app.name, exePath: candidate.path, args: app.launchArgs, isUserAdded: false))
             }
+            pinned = true
             break
         }
 
-        return bottle
+        return (bottle, pinned)
     }
 
     /// Resolves a catalog hint like `"Program Files/7-Zip/7zFM.exe"`
@@ -389,6 +487,19 @@ private final class DownloadProgressFetcher: NSObject, URLSessionDownloadDelegat
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        // `URLSession` treats a 404/500 as a *successful* download of the
+        // error page's body, so without this check an HTML "not found" page
+        // is saved as `Setup.exe` and handed to Wine. (`EngineManager` and
+        // `DXVKInstaller` make the same check for the same reason.) The
+        // temp file at `location` is deleted by the system as soon as this
+        // callback returns, so there is nothing to clean up here.
+        if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            continuation.resume(throwing: AppInstaller.InstallError(
+                message: "Downloading the installer failed (server returned HTTP \(http.statusCode)). The download link may have moved. Try again later; if it keeps happening, this app's catalog entry needs a new link."
+            ))
+            session.finishTasksAndInvalidate()
+            return
+        }
         do {
             try FileManager.default.moveItem(at: location, to: stagingURL)
             continuation.resume(returning: stagingURL)

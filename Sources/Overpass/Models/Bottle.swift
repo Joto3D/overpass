@@ -80,6 +80,15 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
     /// backward-compatibility reason as `d3dMetalOverlay`; `nil` is treated
     /// as `defaultVirtualDesktopSize`.
     var virtualDesktopSize: String?
+    /// `GameFix.id`s already applied to this bottle by `GameFixService`,
+    /// so a fix's slow bottle-mutating steps (winetricks verbs above all)
+    /// run once per bottle rather than on every launch. Launch-only fixes
+    /// (env vars / launch args — `GameFix.isLaunchOnly`) are never
+    /// recorded, since there is nothing to avoid redoing. Optional for the
+    /// same backward-compatibility reason as `removedPinPaths`: `nil` (any
+    /// `metadata.json` written before this field existed) means "no fixes
+    /// applied yet", and decodes via `decodeIfPresent`.
+    var appliedFixes: [String]?
 
     /// Fallback size used whenever `virtualDesktopSize` is absent or fails
     /// `validatedVirtualDesktopSize`'s validation.
@@ -139,7 +148,7 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, engineID, windowsVersion, esync, msync, metalHUD, verboseLog, dxvk
         case env, pins, performance, createdAt, lastUsed, pinsSchemaVersion, removedPinPaths
-        case d3dMetalOverlay, virtualDesktop, virtualDesktopSize
+        case d3dMetalOverlay, virtualDesktop, virtualDesktopSize, appliedFixes
     }
 
     init(from decoder: Decoder) throws {
@@ -163,6 +172,7 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
         d3dMetalOverlay = try c.decodeIfPresent(Bool.self, forKey: .d3dMetalOverlay) ?? false
         virtualDesktop = try c.decodeIfPresent(Bool.self, forKey: .virtualDesktop) ?? false
         virtualDesktopSize = try c.decodeIfPresent(String.self, forKey: .virtualDesktopSize)
+        appliedFixes = try c.decodeIfPresent([String].self, forKey: .appliedFixes)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -186,5 +196,6 @@ struct Bottle: Identifiable, Codable, Hashable, Sendable {
         try c.encode(d3dMetalOverlay, forKey: .d3dMetalOverlay)
         try c.encode(virtualDesktop, forKey: .virtualDesktop)
         try c.encodeIfPresent(virtualDesktopSize, forKey: .virtualDesktopSize)
+        try c.encodeIfPresent(appliedFixes, forKey: .appliedFixes)
     }
 }

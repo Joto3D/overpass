@@ -26,12 +26,27 @@ BIN_PATH="$(swift build -c release --show-bin-path)"
 echo "==> Cleaning previous bundle"
 rm -rf "$APP_BUNDLE"
 
+# Keep the build output out of Spotlight. Without this, build/Overpass.app
+# is indexed as a second installed application and shows up alongside the
+# real copy in ~/Applications every time you search for "Overpass".
+mkdir -p "$BUILD_DIR"
+touch "$BUILD_DIR/.metadata_never_index"
+
 echo "==> Assembling $APP_NAME.app"
 mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 cp "$BIN_PATH/$APP_NAME" "$MACOS_DIR/$APP_NAME"
 cp "$ROOT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
+
+# The GPL requires the licence text to travel with the binary, and the
+# .app is how Overpass is actually distributed — a LICENSE sitting only in
+# the source tree does not reach someone handed the app. LICENSE-FIXES
+# goes along for the same reason: the built-in fix data is compiled into
+# that binary, and its CC0 dedication is what tells a recipient they may
+# reuse it.
+cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/LICENSE"
+cp "$ROOT_DIR/LICENSE-FIXES" "$RESOURCES_DIR/LICENSE-FIXES"
 
 # Copy any other resources (icon assets, etc.) besides Info.plist itself.
 for item in "$ROOT_DIR"/Resources/*; do
@@ -65,6 +80,34 @@ if [ -f "$ICON_PNG" ]; then
     rm -rf "$ICONSET_DIR"
 else
     echo "==> No Resources/icon.png found, skipping app icon generation"
+fi
+
+# Frame-counter shim (Shim/fgshim.m -> Contents/Resources/libfgshim.dylib).
+# A Metal present-hook that WineRunner injects into a bottle's Wine
+# processes via DYLD_INSERT_LIBRARIES when that bottle's "Frame counter"
+# diagnostic is on. Universal (x86_64 + arm64) because Wine runs under
+# Rosetta, so the injected image must have an x86_64 slice. Same build line
+# as the proven prototype. It lives in Shim/ (not Sources/) so SwiftPM does
+# not try to build it as a target.
+#
+# This step is best-effort ON PURPOSE: the shim is a diagnostic, so if
+# clang is missing or the compile fails we warn and carry on rather than
+# breaking the app build. The app copes with the dylib being absent (the
+# toggle then does nothing; see `FrameCounterShim.dylibURL`).
+SHIM_SRC="$ROOT_DIR/Shim/fgshim.m"
+SHIM_OUT="$RESOURCES_DIR/libfgshim.dylib"
+if [ -f "$SHIM_SRC" ]; then
+    echo "==> Building frame-counter shim (libfgshim.dylib)"
+    if clang -dynamiclib -fobjc-arc -O2 -Wall -arch x86_64 -arch arm64 \
+        -framework Foundation -framework Metal -framework QuartzCore \
+        -install_name @rpath/libfgshim.dylib -o "$SHIM_OUT" "$SHIM_SRC"; then
+        echo "    shim architectures: $(lipo -archs "$SHIM_OUT")"
+    else
+        echo "warning: frame-counter shim failed to build; continuing without libfgshim.dylib" >&2
+        rm -f "$SHIM_OUT"
+    fi
+else
+    echo "warning: $SHIM_SRC not found; skipping frame-counter shim" >&2
 fi
 
 echo "==> Ad-hoc codesigning $APP_NAME.app"

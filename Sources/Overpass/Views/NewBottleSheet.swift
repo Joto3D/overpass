@@ -23,7 +23,7 @@ struct NewBottleSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
             Text("New Bottle")
-                .font(Theme.titleFont(18))
+                .font(Theme.sheetTitleFont)
 
             if appState.installedEngines.isEmpty {
                 VStack(alignment: .leading, spacing: Theme.Spacing.s) {
@@ -44,29 +44,25 @@ struct NewBottleSheet: View {
                             Text(engine.displayName).tag(engine.id)
                         }
                     }
-                    Picker("Windows Version", selection: $windowsVersion) {
+                    Picker("Windows version", selection: $windowsVersion) {
                         ForEach(WindowsVersion.allCases) { version in
                             Text(version.displayName).tag(version)
                         }
                     }
                 }
                 .formStyle(.grouped)
+                // The creation task has already captured these values, so
+                // editing them mid-create changed nothing but looked as if
+                // it might; locking the form says so.
+                .disabled(isCreating)
 
                 if let selectedEngineKind {
-                    Text(engineTradeoffCaption(for: selectedEngineKind))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    EngineTradeoffNote(kind: selectedEngineKind)
                         .padding(.horizontal, Theme.Spacing.s)
                 }
 
                 if isCreating {
-                    HStack(spacing: Theme.Spacing.s) {
-                        ProgressView().controlSize(.small)
-                        Text(appState.bottleCreationStatus.values.first ?? "Creating…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    InlineProgress(text: appState.bottleCreationStatus.values.first ?? "Creating…")
                 }
             }
 
@@ -83,7 +79,14 @@ struct NewBottleSheet: View {
             }
         }
         .padding(Theme.Spacing.xl)
-        .frame(width: 460)
+        .frame(width: Theme.Metrics.sheetWidth)
+        // Cancel is disabled while creating, but Escape would still close
+        // the sheet underneath a `wineboot` that is mid-run; this makes
+        // Escape agree with the disabled Cancel button.
+        .interactiveDismissDisabled(isCreating)
+        // The sheet closes itself when creation ends, so a failure's alert
+        // simply waits for that rather than competing with the sheet.
+        .defersErrorAlert()
         .onAppear {
             if engineID.isEmpty {
                 engineID = appState.installedEngines.first?.id ?? ""

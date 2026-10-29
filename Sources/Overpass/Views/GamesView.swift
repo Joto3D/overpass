@@ -32,10 +32,19 @@ struct GamesView: View {
         Store.allCases.filter { store in games.contains { $0.store == store } }
     }
 
+    /// The store filter actually in force: `storeFilter`, unless a rescan
+    /// has since found no games from that store. The filter menu is hidden
+    /// once only one store is left (`storesPresent.count > 1`), so a stale
+    /// filter would otherwise leave an empty list with no control anywhere
+    /// to clear it.
+    private var activeStoreFilter: Store? {
+        storeFilter.flatMap { storesPresent.contains($0) ? $0 : nil }
+    }
+
     private var filteredGames: [InstalledGame] {
         var result = games
-        if let storeFilter {
-            result = result.filter { $0.store == storeFilter }
+        if let activeStoreFilter {
+            result = result.filter { $0.store == activeStoreFilter }
         }
         let trimmed = searchText.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return result }
@@ -44,22 +53,33 @@ struct GamesView: View {
 
     var body: some View {
         if let bottle {
+            // Evaluated once per render: filtering runs a substring search
+            // over every game, and the list loop below used to ask for the
+            // last element again for every row.
+            let shownGames = filteredGames
             VStack(alignment: .leading, spacing: Theme.Spacing.m) {
                 toolbar(bottle)
 
                 if !hasScannedOnce && isScanning {
-                    emptyState("Scanning for games\u{2026}")
+                    EmptyStateMessage("Scanning for games\u{2026}", showsProgress: true)
                 } else if games.isEmpty {
-                    emptyState("No games found — install one through Steam, GOG Galaxy or Epic in this bottle.")
-                } else if filteredGames.isEmpty {
-                    emptyState("No games match \u{201c}\(searchText)\u{201d}.")
+                    EmptyStateMessage("No games found — install one through Steam, GOG Galaxy or Epic in this bottle.")
+                } else if shownGames.isEmpty {
+                    // The search box can be empty here (the store filter alone
+                    // emptied the list), where "No games match “”." read as a
+                    // bug.
+                    if searchText.trimmingCharacters(in: .whitespaces).isEmpty, let activeStoreFilter {
+                        EmptyStateMessage("No \(activeStoreFilter.displayName) games found.")
+                    } else {
+                        EmptyStateMessage("No games match \u{201c}\(searchText)\u{201d}.")
+                    }
                 } else if viewMode == .grid {
                     ScrollView {
                         LazyVGrid(
                             columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.Spacing.l)],
                             spacing: Theme.Spacing.l
                         ) {
-                            ForEach(filteredGames) { game in
+                            ForEach(shownGames) { game in
                                 GameCard(game: game, bottle: bottle)
                             }
                         }
@@ -67,9 +87,9 @@ struct GamesView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(filteredGames) { game in
+                            ForEach(shownGames) { game in
                                 GameRow(game: game, bottle: bottle)
-                                if game.id != filteredGames.last?.id {
+                                if game.id != shownGames.last?.id {
                                     Divider()
                                 }
                             }
@@ -97,59 +117,75 @@ struct GamesView: View {
 
     private func toolbar(_ bottle: Bottle) -> some View {
         HStack(spacing: Theme.Spacing.s) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search games", text: $searchText)
-                    .textFieldStyle(.plain)
-            }
-            .padding(.horizontal, Theme.Spacing.s)
-            .frame(maxWidth: .infinity)
-            .frame(height: Theme.Metrics.toolbarControl)
-            .overpassCard(cornerRadius: Theme.Radius.row)
+            ToolbarSearchField(prompt: "Search games", text: $searchText)
 
             if isScanning {
                 ProgressView().controlSize(.small)
             }
 
             if storesPresent.count > 1 {
+                // The current choice is marked with a checkmark: the menu
+                // used to give no sign of which store (if any) was filtering
+                // the list.
                 Menu {
-                    Button("All stores") { storeFilter = nil }
+                    Button {
+                        storeFilter = nil
+                    } label: {
+                        if activeStoreFilter == nil {
+                            Label("All stores", systemImage: "checkmark")
+                        } else {
+                            Text("All stores")
+                        }
+                    }
                     Divider()
                     ForEach(storesPresent) { store in
-                        Button(store.displayName) { storeFilter = store }
+                        Button {
+                            storeFilter = store
+                        } label: {
+                            if activeStoreFilter == store {
+                                Label(store.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(store.displayName)
+                            }
+                        }
                     }
                 } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    // Filled glyph + accent when a store is filtering, to
+                    // match the Programs filter menu — the checkmark inside
+                    // the menu is only visible once it is open.
+                    Image(systemName: activeStoreFilter == nil
+                          ? "line.3.horizontal.decrease.circle"
+                          : "line.3.horizontal.decrease.circle.fill")
+                        .foregroundStyle(activeStoreFilter == nil ? Color.secondary : Color.accentColor)
                         .frame(width: Theme.Metrics.toolbarControl, height: Theme.Metrics.toolbarControl)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Filter by store")
+                .accessibilityLabel("Filter by store")
             }
 
+            // Icon-only segments: each is named for VoiceOver and gets a
+            // tooltip, since neither glyph says "grid" or "list" in words.
             Picker("View mode", selection: $viewMode) {
-                Image(systemName: "square.grid.2x2").tag(GamesViewMode.grid)
-                Image(systemName: "list.bullet").tag(GamesViewMode.list)
+                Image(systemName: "square.grid.2x2")
+                    .help("Grid")
+                    .accessibilityLabel("Grid")
+                    .tag(GamesViewMode.grid)
+                Image(systemName: "list.bullet")
+                    .help("List")
+                    .accessibilityLabel("List")
+                    .tag(GamesViewMode.list)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 76, height: Theme.Metrics.toolbarControl)
 
-            IconToolbarButton(systemImage: "arrow.clockwise", help: "Rescan") {
+            IconToolbarButton(systemImage: "arrow.clockwise", help: "Rescan games") {
                 Task { await rescan(bottle) }
             }
             .disabled(isScanning)
         }
-    }
-
-    private func emptyState(_ message: String) -> some View {
-        Text(message)
-            .font(.system(size: 13))
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.top, Theme.Spacing.xl * 2)
     }
 
     // MARK: - Actions
@@ -185,7 +221,7 @@ private struct GameCard: View {
     @State private var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.compact) {
             cover
                 .aspectRatio(2.0 / 3.0, contentMode: .fit)
                 .frame(maxWidth: .infinity)
@@ -209,6 +245,7 @@ private struct GameCard: View {
                             .buttonStyle(.plain)
                             .disabled(game.launchExe == nil)
                             .help("Play")
+                            .accessibilityLabel("Play \(game.name)")
                         }
                     }
                 }
@@ -216,30 +253,36 @@ private struct GameCard: View {
                 .scaleEffect(isHovering ? 1.035 : 1)
                 .animation(Theme.settle, value: isHovering)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
                 Text(game.name)
-                    .font(.system(size: 13))
+                    .font(Theme.rowTitleFont)
                     .lineLimit(2)
                     .minimumScaleFactor(0.75)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(game.subtitle)
-                    .font(.system(size: 11))
+                    .font(Theme.rowSubtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .help(game.subtitle.isEmpty ? game.name : "\(game.name) — \(game.subtitle)")
         }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { play() }
         .onHover { isHovering = $0 }
         .task(id: game.id) { await loadArt() }
+        // The play button only exists while the pointer hovers, so it is
+        // unreachable from the keyboard or VoiceOver; this exposes the same
+        // action on the card itself.
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "Play") { play() }
         .contextMenu {
             Button("Play") { play() }
                 .disabled(game.launchExe == nil)
-            Button("Reveal Install Folder in Finder") { reveal() }
+            Button("Reveal in Finder") { reveal() }
                 .disabled(revealTarget == nil)
-            Button("Copy Launch Command") { copyLaunchCommand() }
+            Button("Copy launch command") { copyLaunchCommand() }
                 .disabled(game.launchExe == nil)
         }
     }
@@ -306,20 +349,22 @@ private struct GameRow: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.m) {
             Image(systemName: "gamecontroller.fill")
-                .font(.system(size: 13))
+                .font(Theme.rowTitleFont)
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
+                .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.hairline) {
                 Text(game.name)
-                    .font(.system(size: 13))
+                    .font(Theme.rowTitleFont)
                     .lineLimit(1)
                 Text(game.subtitle)
-                    .font(.system(size: 11))
+                    .font(Theme.rowSubtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .help(game.subtitle.isEmpty ? game.name : "\(game.name) — \(game.subtitle)")
 
             Spacer(minLength: Theme.Spacing.m)
 
@@ -327,13 +372,14 @@ private struct GameRow: View {
                 Button(action: play) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 11))
-                        .frame(width: 20, height: 20)
+                        .frame(width: Theme.Metrics.iconButton, height: Theme.Metrics.iconButton)
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
                 .fixedSize()
                 .disabled(game.launchExe == nil)
                 .help("Play")
+                .accessibilityLabel("Play \(game.name)")
             }
         }
         .padding(.horizontal, Theme.Spacing.m)
@@ -341,12 +387,15 @@ private struct GameRow: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { play() }
         .onHover { isHovering = $0 }
+        // Hover-only play button: same keyboard/VoiceOver route as GameCard.
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "Play") { play() }
         .contextMenu {
             Button("Play") { play() }
                 .disabled(game.launchExe == nil)
             Button("Reveal in Finder") { reveal() }
                 .disabled(revealTarget == nil)
-            Button("Copy Launch Command") { copyLaunchCommand() }
+            Button("Copy launch command") { copyLaunchCommand() }
                 .disabled(game.launchExe == nil)
         }
     }

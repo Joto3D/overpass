@@ -116,8 +116,10 @@ struct CatalogApp: Identifiable, Hashable, Sendable {
 /// The curated, fixed catalog of installable Windows apps. Every
 /// `installerURL` below was verified reachable (final response 200 with a
 /// binary content-type after following redirects) with
-/// `curl -sIL <url> | grep -iE '^(HTTP|location)'` in September 2026 — see
-/// the implementation report for the full table. Entries the author could
+/// `curl -sIL <url> | grep -iE '^(HTTP|location)'`, last re-checked in
+/// October 2026 (when the VLC pin was found returning HTTP 500 and the
+/// 7-Zip and Notepad++ pins had gone stale) — see the implementation
+/// report for the full table. Entries the author could
 /// not verify a working direct-download URL for (itch.io's app, which only
 /// ships as a signed, short-lived, expiring R2 URL that 403s on a plain
 /// `curl -I`; a standalone Doom/Freedoom engine, which upstream only ships
@@ -228,8 +230,8 @@ enum AppCatalog {
             publisher: "Igor Pavlov",
             category: .utilities,
             blurb: "Open-source archive manager with very high compression, needed by a lot of Windows installers and mod tools.",
-            installerURL: URL(string: "https://www.7-zip.org/a/7z2409-x64.exe")!,
-            installerFileName: "7z2409-x64.exe",
+            installerURL: URL(string: "https://www.7-zip.org/a/7z2605-x64.exe")!,
+            installerFileName: "7z2605-x64.exe",
             silentArgs: ["/S"],
             recommendedWindows: .win10,
             launchExeHints: ["Program Files/7-Zip/7zFM.exe"],
@@ -242,8 +244,8 @@ enum AppCatalog {
             publisher: "Don Ho",
             category: .utilities,
             blurb: "A fast, free source-code and text editor with syntax highlighting for dozens of languages.",
-            installerURL: URL(string: "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.8/npp.8.9.8.Installer.x64.exe")!,
-            installerFileName: "npp.8.9.8.Installer.x64.exe",
+            installerURL: URL(string: "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.8.1/npp.8.9.8.1.Installer.x64.exe")!,
+            installerFileName: "npp.8.9.8.1.Installer.x64.exe",
             silentArgs: ["/S"],
             recommendedWindows: .win10,
             launchExeHints: ["Program Files/Notepad++/notepad++.exe"],
@@ -256,8 +258,12 @@ enum AppCatalog {
             publisher: "VideoLAN",
             category: .utilities,
             blurb: "Plays essentially any video or audio format, including codecs some Windows programs expect to find installed.",
-            installerURL: URL(string: "https://get.videolan.org/vlc/last/win64/vlc-3.0.23-win64.exe")!,
-            installerFileName: "vlc-3.0.23-win64.exe",
+            // `/last/` always holds only the newest release, so this exact
+            // filename 404/500s the moment VideoLAN ships a new one — the
+            // 3.0.23 pin here was already dead (HTTP 500) by October 2026.
+            // Re-check this one whenever a catalog install of VLC fails.
+            installerURL: URL(string: "https://get.videolan.org/vlc/last/win64/vlc-3.0.24-win64.exe")!,
+            installerFileName: "vlc-3.0.24-win64.exe",
             silentArgs: ["/S"],
             recommendedWindows: .win10,
             launchExeHints: ["Program Files/VideoLAN/VLC/vlc.exe"],

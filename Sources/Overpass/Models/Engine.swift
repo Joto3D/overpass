@@ -5,7 +5,7 @@ import Foundation
 enum EngineKind: String, Codable, CaseIterable, Sendable {
     /// Apple Game Porting Toolkit (Gcenx build): Wine + D3DMetal.
     case gptk
-    /// Upstream Wine-staging (Gcenx build). DirectX via DXVK-macOS.
+    /// Upstream Wine-staging (Gcenx build). DirectX via DXVK.
     case wineStaging
 
     var displayName: String {
@@ -39,6 +39,27 @@ struct EngineRelease: Identifiable, Codable, Hashable, Sendable {
     var displayName: String { "\(kind.displayName) \(version)" }
 }
 
+/// Provenance of an engine built from a file the user obtained themselves
+/// (Apple's Game Porting Toolkit 4 download, which sits behind an Apple
+/// Account sign-in and may not be redistributed — see `GPTKRedist`). Kept in
+/// `installed.json` so the UI and diagnostics can say honestly what the
+/// engine is made of instead of presenting it like a catalog build.
+struct UserSuppliedOrigin: Codable, Hashable, Sendable {
+    /// File or folder name the user chose (never a full path: it can
+    /// contain a username and is useless once the download is deleted).
+    let sourceName: String
+    /// SHA-256 of the `.dmg` the user chose, `nil` when they chose a folder.
+    /// Recorded for bug reports; Apple publishes no checksum to compare it to.
+    let sourceSHA256: String?
+    /// `InstalledEngine.id` of the Wine engine this was cloned from.
+    let baseEngineID: String
+    /// That base engine's `wine --version` output at the time.
+    let baseVersionString: String
+    /// Whether Apple's code signature on the D3DMetal files was verified
+    /// (it is for every real install; false only in offline fixture tests).
+    let signatureVerified: Bool
+}
+
 /// An engine that has been downloaded and extracted under `Paths.engines`.
 /// Persisted as `installed.json` inside its folder by `EngineManager`.
 struct InstalledEngine: Identifiable, Codable, Hashable, Sendable {
@@ -68,6 +89,11 @@ struct InstalledEngine: Identifiable, Codable, Hashable, Sendable {
     /// in a build from an Apple GPTK `.dmg`. `nil` until an import has been
     /// done (i.e. still whatever shipped in the Gcenx tarball).
     var d3dmetalVersion: String? = nil
+    /// Set only for engines Overpass assembled from files the user supplied
+    /// (`EngineManager.installUserSuppliedGPTK`), `nil` for everything
+    /// downloaded from the catalog. Optional so every existing
+    /// `installed.json` still decodes.
+    var userSupplied: UserSuppliedOrigin? = nil
 
     var displayName: String { "\(kind.displayName) \(version)" }
 

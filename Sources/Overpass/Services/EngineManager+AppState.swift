@@ -64,6 +64,41 @@ extension AppState {
         engineInstallStatus[release.id] = nil
     }
 
+    /// Builds a selectable engine from a Game Porting Toolkit 4 download the
+    /// user obtained from Apple themselves (`.dmg` or its `redist/lib`
+    /// folder) — the only supported route, since Apple's download is behind
+    /// a sign-in and licence (`GPTKRedist`). Progress is published under
+    /// `EngineCatalog.userSuppliedGPTKProgressKey`, so a view can show it with
+    /// `engineInstallProgress[...]` / `isInstalling(...)` exactly like a
+    /// catalog install. `base` is `nil` to let `EngineManager` choose.
+    /// Failures go through `report(_:context:)`; on success the new engine
+    /// is in `installedEngines`, so bottle pickers list it immediately.
+    func installGPTKFromUserFile(_ source: URL, base: InstalledEngine? = nil) async {
+        let key = EngineCatalog.userSuppliedGPTKProgressKey
+        guard !isInstalling(key) else { return }
+
+        engineInstallProgress[key] = 0
+        engineInstallStatus[key] = "Starting…"
+
+        do {
+            let installed = try await EngineManager.shared.installUserSuppliedGPTK(from: source, base: base) { [weak self] fraction, status in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.engineInstallProgress[key] = fraction
+                    self.engineInstallStatus[key] = status
+                }
+            }
+            installedEngines.removeAll { $0.id == installed.id }
+            installedEngines.append(installed)
+            installedEngines.sort { $0.id < $1.id }
+        } catch {
+            report(error, context: "Installing Game Porting Toolkit from your download")
+        }
+
+        engineInstallProgress[key] = nil
+        engineInstallStatus[key] = nil
+    }
+
     /// Moves an installed engine's folder to the Trash and drops it from
     /// `installedEngines`. Any bottle still configured to use it will
     /// simply fail to launch until repointed at another engine — v1 does
